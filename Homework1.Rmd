@@ -1,0 +1,290 @@
+---
+title: "Homework 1"
+author: "Gifty Osei"
+date: "`r Sys.Date()`"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+header-includes:
+  - \usepackage{pdfpages}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,tidy = TRUE,dev = "cairo_pdf")
+
+library(latex2exp)
+```
+
+
+## Acknowledgement / Disclosure Statement
+
+I discussed this homework with Jacob Antici at some point specifically on understanding some of the problems/questions, however my work is completely independent. I also used Chat-GPT to fine tune my writings and occasionally in fixing bugs in my code.
+
+## Part 1 - Part 2
+
+\includepdf[pages=1-21]{D:/WashU/PHD/Year 2/Sem 2/SDS 5320/Homework/Homework1_causal.pdf}
+
+
+## Part 3
+
+
+
+```{r}
+## Data from table
+placebo <- c(8.62, 1.48, 8.93, 9.57, 2.65, 7.30)
+vitamin_A    <- c(0.06, 1.72, 2.19, 7.32, 7.53, 7.62)
+
+## Outcome vector 
+y <- c(placebo, vitamin_A)
+
+n  <- length(y)
+# number treated
+m  <- 6                     
+idx_all <- 1:n
+
+## Observed assignment: last 6 are Vitamin_A, first 6 are Placebo
+treat_obs <- 7:12
+
+## Given test statistic
+T_obs <- mean(y[treat_obs]) - mean(y[-treat_obs])
+T_obs
+
+# function to compute the test statistic
+T_stat <- function(treat_idx, y) {
+  mean(y[treat_idx]) - mean(y[-treat_idx])
+}
+
+```
+
+**a**
+
+```{r}
+## a
+
+## Exact randomization p-value (two-tailed)
+
+
+## finding the space of completely randomized assignment 
+# 6 x 924 matrix; each column = treated indices
+treat_sets <- combn(n, m)             
+
+## Fast computation using sums:
+## If S_t = sum(y in treated), total = sum(y),
+## mean_treat = S_t/m
+## mean_ctrl  = (total - S_t)/(n-m)
+## T = mean_treated - mean_control
+# treated sums for each assignment
+S_t <- colSums(matrix(y[treat_sets], nrow = m))   
+S_all <- sum(y)
+# 924 test statistics
+T_all <- (S_t/m) - ((S_all - S_t)/(n - m))        
+
+## Two-sided exact p-value
+# we are computing the probability that we observed something at least or as extreme than the t-stats if the null hypothesis is true.
+p_exact <- mean(abs(T_all) >= abs(T_obs))
+p_exact
+
+
+
+```
+
+
+**1b**
+
+```{r}
+
+
+## Bootstraps samples approximation with B=1000 
+
+
+set.seed(789)
+
+B <- 1000
+
+T_mc <- replicate(B, {
+  tr <- sample(idx_all, m, replace = FALSE)
+  T_stat(tr, y)
+})
+
+p_mc <- mean(abs(T_mc) >= abs(T_obs))
+se_mc <- sqrt(p_mc * (1 - p_mc) / B)   
+
+p_mc
+se_mc
+
+## 95% CI
+c(lower = p_mc - 1.96 * se_mc, upper = p_mc + 1.96 * se_mc)
+
+```
+**Comment on Comparing**
+
+We draw 1000 bootstrap samples from the distribution of the statistics under the null hypothesis. The p-value from the simulation is `r p_mc` and that from the exact p-value (fisher's test) from 1a is `r p_exact`. Since the p-value is larger than 0.05 in both cases, then we fail to reject the sharp null hypothesis of no treatment effect at a significance level of 0.05 and conclude that there there is no improvement by taking vitamin A in children.
+
+
+**c**
+
+```{r}
+
+## Two-sample t-test (Vitamin_A vs Placebo)
+
+
+t_out_welch <- t.test(vitamin_A, placebo, alternative = "two.sided", var.equal = FALSE)
+
+t_out_pooled <- t.test(vitamin_A, placebo, alternative = "two.sided", var.equal = TRUE)
+
+t_out_welch$p.value
+t_out_pooled$p.value
+
+
+## output
+
+cat("\nObserved T (Vitamin_A - Placebo):", T_obs,
+    "\nExact Fisher p-value:", p_exact,
+    "\nMC Fisher p-value (B=1000):", p_mc, " (MC SE:", se_mc, ")",
+    "\nT-test p-value (Welch):", t_out_welch$p.value, "\n")
+
+```
+
+
+**1d**
+
+For the exact fisher test; It uses the assignment mechanism by completely randomizing with 6 treated out of 12 children. It also uses the sharp null for each unit i, $Y_i(1) = Y_i(0)$ (i.e. completely impute). Under this approach, the missing Potential Outcome are imputed exactly, so every assignment implies a fully known set of observed outcomes.
+
+For the simulation test; it is an approximation to the exact randomization distribution. The approximation is computational: instead of enumerating all 924 assignments, it samples 1000 assignments from the mechanism. Hence, it approximates the exact.
+
+And for the t-test; It replaces the randomization distribution of the statistic with an analytic/parametric distribution. It is justified by modeling assumptions and large sample CLT. Also it is framed under superpopulation framework where randomization is not only from the treatment.
+
+So (c) approximate (a) using a parametric/asymptotic distributional approximation rather than exact randomization.
+
+ 
+**2**
+
+```{r}
+
+## Now we create a paired data
+## Each row is a matched pair: (placebo_i, vitA_i) are the two children in pair i
+pairs <- data.frame(pair = 1:6, ctrl = placebo, trt = vitamin_A)
+
+## Outcomes in each pair as a vector of length 2 
+y_pair <- as.matrix(pairs[, c("ctrl","trt")])  
+
+```
+
+
+**2a**
+
+```{r}
+
+## Observed assignment: given in table
+# within-pair differences (treated - control)
+d_obs <- pairs$trt - pairs$ctrl                
+
+# equals diff-in-means overall under 1-1 pairing
+T_obs <- mean(d_obs)                           
+T_obs
+
+
+## Under pairwise randomization, in each pair the sign can flip:
+## treated-control difference is either +d_i or -d_i, each with prob 1/2 independently.
+
+sign_mat <- as.matrix(expand.grid(rep(list(c(-1, +1)), 6)))  
+# each row gives mean(s_i * d_i)
+T_all <- as.numeric(sign_mat %*% d_obs) / 6                  
+
+p_exact_pair <- mean(abs(T_all) >= abs(T_obs))
+p_exact_pair
+
+```
+
+
+**2b**
+
+```{r}
+
+set.seed(985)
+
+B <- 1000
+T_mc <- replicate(B, {
+  s <- sample(c(-1,+1), size=6, replace=TRUE)  # independent sign flips within each pair
+  mean(s * d_obs)
+})
+
+p_mc_pair <- mean(abs(T_mc) >= abs(T_obs))
+se_mc_pair <- sqrt(p_mc_pair*(1-p_mc_pair)/B)
+
+p_mc_pair
+se_mc_pair
+
+```
+
+
+
+**2c**
+
+```{r}
+# t - test by paired
+
+t_paired <- t.test(d_obs, mu = 0, alternative = "two.sided", paired = FALSE)
+t_paired$p.value
+
+```
+**2d**
+
+(a) exact conditions on the matched-pair assignment mechanism (within each pair, 1 treated, 1 control) and uses fisher's sharp null to make all potential outcomes known under any assignment implies exact randomization distribution over 64 assignments.
+
+(b) Bootstrap is the same mechanism plus same sharp null, but samples 1000 of the 64 possibilities with replacement. We could sample all 64 possibilities which will mean a pure Monte Carlo approximation to (a).
+
+(c) Paired-test replaces the exact randomization distribution of $\bar{d}$ with a t-distribution under assumptions like approximate normality of the within-pair differences. It is for short a parametric approximation to (a).
+
+**3**
+
+One good reason  is the dataset is one realization: Any single sample can yield higher/lower p-values under different valid tests purely by chance. Design comparisons must be made in expectation or across repeated samples. 
+The other is that paring only helps if the matching variables is prognostic for outcomes. If the selected X doesn't strongly predict Y (or matching inducing little reduction within-pair variability), pairwise randomization may not increase power and can look "worse" in a given sample. Completely randomization uses 924 assignment spaces as compared to 64 under pairwise so there is a distribution change.
+
+
+
+\includepdf[pages=22-24]{D:/WashU/PHD/Year 2/Sem 2/SDS 5320/Homework/Homework1_causal.pdf}
+
+
+
+\includepdf[pages=25]{D:/WashU/PHD/Year 2/Sem 2/SDS 5320/Homework/Homework1_causal.pdf}
+
+```{r}
+## Observed data combinesd
+y_obs <- c(placebo, vitamin_A)
+z_obs <- c(rep(0,6), rep(1,6))
+
+tau0 <- 2.5
+
+## Adjust outcomes under sharp null
+y_adj <- y_obs - tau0 * z_obs     
+
+# Observed stats derived on adjusted outcomes
+T_obs_adj <- mean(y_adj[z_obs==1]) - mean(y_adj[z_obs==0])
+T_obs_adj
+
+
+# 924 assignments by the number of assignment formula 
+n <- length(y_adj); m <- 6
+treat_sets <- combn(n, m)
+S_t <- colSums(matrix(y_adj[treat_sets], nrow=m))
+S_all <- sum(y_adj)
+T_all_adj <- (S_t/m) - ((S_all - S_t)/(n-m))
+
+p_exact_const <- mean(abs(T_all_adj) >= abs(T_obs_adj))
+p_exact_const
+
+# bootstrap draws
+
+set.seed(456)
+B <- 1000
+idx_all <- 1:n
+T_mc_adj <- replicate(B, {
+  tr <- sample(idx_all, m, replace=FALSE)
+  mean(y_adj[tr]) - mean(y_adj[-tr])
+})
+p_mc_const <- mean(abs(T_mc_adj) >= abs(T_obs_adj))
+p_mc_const
+
+```
+
