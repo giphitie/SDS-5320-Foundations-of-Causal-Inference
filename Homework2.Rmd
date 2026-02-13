@@ -1,30 +1,26 @@
 ---
-title: "Homework2"
+title: "Homework 2"
 author: "Gifty Osei"
 date: "`r Sys.Date()`"
-output: pdf_document
+output: 
+  pdf_document:
+    latex_engine: xelatex
+header-includes:
+  - \usepackage{pdfpages}
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,tidy = TRUE,dev = "cairo_pdf")
+
+library(latex2exp)
 ```
 
-## R Markdown
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+## Acknowledgement / Disclosure Statement
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+I discussed this homework with Jacob Antici at some point specifically on understanding some of the problems/questions, however my work is completely independent. I also used Chat-GPT to fine tune my writings and occasionally in fixing bugs in my code.
 
-```{r cars}
-summary(cars)
-```
+## Part 1
 
-## Including Plots
+\includepdf[pages=1-21]{D:/WashU/PHD/Year 2/Sem 2/SDS 5320/Homework/Homework1_causal.pdf}
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
-```
-
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
