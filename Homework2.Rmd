@@ -34,7 +34,7 @@ I discussed this homework with Jacob Antici at some point specifically on unders
 ## =========================
 rm(list = ls())
 
-path <- "F:/PHD/SDS 5320/Homework/PS2_data.txt"   # <-- put file in your working directory
+path <- "D:/WashU/PHD/Year 2/Sem 2/SDS 5320/Homework/PS2_data.txt"  
 df <- read.table(path, header = TRUE)
 
 str(df)
@@ -44,6 +44,8 @@ table(df$i_aqoc)
 ## physician 1 vs physician 2
 
 ```
+
+
 To define treatment, we convert categorical covariates; Let 
 
 $Z=1$ if $\text{pg} == 1$ (physician group 1) and $Z=0$ if $\text{pg}== 2$
