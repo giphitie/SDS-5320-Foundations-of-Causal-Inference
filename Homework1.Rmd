@@ -201,6 +201,7 @@ p_exact_pair
 
 ```{r}
 
+
 set.seed(985)
 
 B <- 1000
