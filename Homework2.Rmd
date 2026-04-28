@@ -10,34 +10,57 @@ header-includes:
 ---
 
 ```{r setup, include=FALSE}
+<<<<<<< HEAD
+=======
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, tidy = TRUE,dev = "cairo_pdf")
+>>>>>>> 1bc8b7cb66b86ceda6034867bd57cbe91ba97f98
 
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, tidy = TRUE,dev = "cairo_pdf")
 library(latex2exp)
+<<<<<<< HEAD
 
+=======
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(forcats)
+library(tidyr)
+library(cobalt)
+library(tibble)
+library(Matching)
+library(pander)
+library(broom)
+library(broom.mixed)
+>>>>>>> 1bc8b7cb66b86ceda6034867bd57cbe91ba97f98
 ```
 
 
 ## Acknowledgement / Disclosure Statement
 
-I discussed this homework with Jacob Antici at some point specifically on understanding some of the problems/questions, however my work is completely independent. I also used Chat-GPT to fine tune my writings and occasionally in fixing bugs in my code.
+I discussed this homework with Jacob Antici at some point specifically on NAN's estimation problems, however my work is completely independent. I also used Chat-GPT to fine tune my writings and occasionally in helping to understand with errors and fixing bugs in my code.
+
+<<<<<<< HEAD
+=======
 
 
+## Part 1 Q1a
 
-## Part 1
-
-
+>>>>>>> 1bc8b7cb66b86ceda6034867bd57cbe91ba97f98
 ```{r}
 
 ## small laptop path
-#path <- "D:/WashU/PHD/Year 2/Sem 2/SDS 5320/Homework/PS2_data.txt" 
+path <- "D:/WashU/PHD/Year 2/Sem 2/SDS 5320/Homework/PS2_data.txt" 
 
-#  desktop path
-path <- "F:/PHD/SDS 5320/Homework/PS2_data.txt"
+# desktop path
+#path <- "F:/PHD/SDS 5320/Homework/PS2_data.txt"
 df <- read.table(path, header = TRUE)
 
-str(df)
-table(df$pg)
-table(df$i_aqoc)
+
+# lets look at the freq of the treatment groups and response
+#str(df)
+kable(table(df$pg))
+kable(table(df$i_aqoc))
 
 ## physician 1 vs physician 2
 
@@ -56,43 +79,29 @@ $Z=1$ if $\text{pg} == 1$ (physician group 1) and $Z=0$ if $\text{pg}== 2$
  
 ```{r}
 
-## Treatment + covariates
+# Encoding the binary variables
 
-
-## convert to 0, 1 treatment, control groups
+# convert to 0, 1 treatment, control groups
 df$Z <- ifelse(df$pg == 1, 1, 0)
 
-## Convert categorical variables to factors
+# Convert categorical variables to factors
+
 df$i_sex  <- factor(df$i_sex)
 df$i_race <- factor(df$i_race)
 df$i_educ <- factor(df$i_educ)
 df$i_insu <- factor(df$i_insu)
 df$i_drug <- factor(df$i_drug)
 df$i_seve <- factor(df$i_seve)
-df$i_aqoc <- factor(df$i_aqoc)
 
-## Collapse ultra-rare levels to avoid separation / non-convergence
-## educ: move level "1" into "2"
-df$i_educ <- as.character(df$i_educ)
-df$i_educ[df$i_educ == "1"] <- "2"
-df$i_educ <- factor(df$i_educ)
+## rename response var
+df$outcome <- df$i_aqoc
 
-## insu: move level "3" into "2"
-df$i_insu <- as.character(df$i_insu)
-df$i_insu[df$i_insu == "3"] <- "2"
-df$i_insu <- factor(df$i_insu)
-
-## Check cross-tabs after collapsing (should remove zero cells)
-table(df$i_educ, df$Z)
-table(df$i_insu, df$Z)
 
 ```
  
 ```{r}
-
-## Propensity score model
-## di=o we add i_aqoc variable or not
-
+set.seed(90)
+## Fitting the Propensity score model
 ps_mod <- glm(
   Z ~ i_age + i_sex + i_race + i_educ + i_insu + i_drug + i_seve +
     com_t + pcs_sd + mcs_sd ,
@@ -100,13 +109,22 @@ ps_mod <- glm(
   family = binomial()
 )
 
-summary(ps_mod)
+# summary
+pander(summary(ps_mod), digits = 3, caption = "Coeffiecients From PS model" )
 
 ## Predicted propensity score e_hat = P(Z=1 | X)
 df$e_hat <- predict(ps_mod, type = "response")
 
+## Predicted weighted IPW 
+df$w_ipw <- ifelse(df$Z ==1, 1/df$e_hat, 1/(1-df$e_hat))
+
+## Summary
 summary(df$e_hat)
-tapply(df$e_hat, df$Z, summary)
+summary(df$w_ipw)
+
+#tapply(df$e_hat, df$Z, summary)
+
+#max(df$w_ipw)
 
 ```
 
@@ -125,18 +143,19 @@ We compute IPW (ATE) weights:
 
 df$w_ipw <- ifelse(df$Z == 1, 1 / df$e_hat, 1 / (1 - df$e_hat))
 
-summary(df$w_ipw)
-quantile(df$w_ipw, probs = c(.9, .95, .99))
+## look at the summary
+#kable(summary(df$w_ipw), digits = 3, caption = "Summary of Weighted IPW")
+#quantile(df$w_ipw, probs = c(.9, .95, .99))
 
 ## Show the most extreme weights
 df_extreme <- df[order(df$w_ipw, decreasing = TRUE),
                  c("pg","Z","i_aqoc","e_hat","w_ipw","i_race","i_educ","i_insu","i_seve",
                    "com_t","pcs_sd","mcs_sd")]
-head(df_extreme, 10)
+kable(head(df_extreme,10), caption = "Extreme Weights")
 
 ```
  
-For Balance checking using ASD
+For Balance checking using ASD, we use;
 
 $$\text{ASD} = \dfrac{|\frac{\sum_{i=1}^N w_1(X_i)Z_i X_{pi}}{\sum_{i=1}^N w_1(X_i)Z_i} - \frac{\sum_{i=1}^N w_0(X_i)(1-Z_i) X_{pi}}{\sum_{i=1}^N w_0(X_i)(1-Z_i)}|}{\sqrt{\frac{s_1^2 + s_0^2}{2}}}$$
 
@@ -190,7 +209,7 @@ asd_factor_max <- function(f, z, w1 = NULL, w0 = NULL) {
 ```
 
 
-For ASD before weighting vs after IPW;
+Computing ASD before weighting vs after IPW as;
 
 
 ```{r}
@@ -209,41 +228,17 @@ out <- data.frame(
   ASD_IPW = NA_real_
 )
 
-## continuous
-out[out$covariate=="i_age",  c("ASD_unweighted","ASD_IPW")]  <- c(asd_cont(df$i_age,  z),
-                                                                 asd_cont(df$i_age,  z, w1, w0))
-out[out$covariate=="com_t",  c("ASD_unweighted","ASD_IPW")]  <- c(asd_cont(df$com_t,  z),
-                                                                 asd_cont(df$com_t,  z, w1, w0))
-out[out$covariate=="pcs_sd", c("ASD_unweighted","ASD_IPW")]  <- c(asd_cont(df$pcs_sd, z),
-                                                                 asd_cont(df$pcs_sd, z, w1, w0))
-out[out$covariate=="mcs_sd", c("ASD_unweighted","ASD_IPW")]  <- c(asd_cont(df$mcs_sd, z),
-                                                                 asd_cont(df$mcs_sd, z, w1, w0))
 
-## categorical (max over levels)
-out[out$covariate=="i_sex",  c("ASD_unweighted","ASD_IPW")]  <- c(asd_factor_max(df$i_sex,  z),
-                                                                 asd_factor_max(df$i_sex,  z, w1, w0))
-out[out$covariate=="i_race", c("ASD_unweighted","ASD_IPW")]  <- c(asd_factor_max(df$i_race, z),
-                                                                 asd_factor_max(df$i_race, z, w1, w0))
-out[out$covariate=="i_educ", c("ASD_unweighted","ASD_IPW")]  <- c(asd_factor_max(df$i_educ, z),
-                                                                 asd_factor_max(df$i_educ, z, w1, w0))
-out[out$covariate=="i_insu", c("ASD_unweighted","ASD_IPW")]  <- c(asd_factor_max(df$i_insu, z),
-                                                                 asd_factor_max(df$i_insu, z, w1, w0))
-out[out$covariate=="i_drug", c("ASD_unweighted","ASD_IPW")]  <- c(asd_factor_max(df$i_drug, z),
-                                                                 asd_factor_max(df$i_drug, z, w1, w0))
-out[out$covariate=="i_seve", c("ASD_unweighted","ASD_IPW")]  <- c(asd_factor_max(df$i_seve, z),
-                                                                 asd_factor_max(df$i_seve, z, w1, w0))
 
-out$ASD_unweighted <- round(out$ASD_unweighted, 3)
-out$ASD_IPW        <- round(out$ASD_IPW, 3)
-
-out[order(out$ASD_IPW, decreasing = TRUE), ]
+bal.tab(ps_mod, weights = df$w_ipw, method = "weighting", estimand = "ATE")
 
 ```
 
-**lets do the love plot here**
 
-```{r}
-# install.packages("cobalt")
+
+```{r, eval=FALSE, include=FALSE}
+#lets do the love plot here**
+
 library(cobalt)
 
 # Covariate formula (same as your PS model)
@@ -261,15 +256,15 @@ bal_ipw <- bal.tab(
 
 print(bal_ipw)
 
-# Love plot: Unweighted vs IPW
-love.plot(
-  bal_ipw,
-  stat = "mean.diffs",     # ASD / standardized mean differences
-  abs  = TRUE,
-  thresholds = c(m = .1),  # ASD=0.1 reference line
-  var.order = "unadjusted",
-  line = TRUE
-)
+# # Love plot: Unweighted vs IPW
+# love.plot(
+#   bal_ipw,
+#   stat = "mean.diffs",     # ASD / standardized mean differences
+#   abs  = TRUE,
+#   thresholds = c(m = .1),  # ASD=0.1 reference line
+#   var.order = "unadjusted",
+#   line = TRUE
+# )
 
 
 bal_ow <- bal.tab(
@@ -282,15 +277,15 @@ bal_ow <- bal.tab(
 )
 
 print(bal_ow)
-
-love.plot(
-  bal_ow,
-  stat = "mean.diffs",
-  abs  = TRUE,
-  thresholds = c(m = .1),
-  var.order = "unadjusted",
-  line = TRUE
-)
+# 
+# love.plot(
+#   bal_ow,
+#   stat = "mean.diffs",
+#   abs  = TRUE,
+#   thresholds = c(m = .1),
+#   var.order = "unadjusted",
+#   line = TRUE
+# )
 
 
 ## Make sure treatment exists in df
@@ -310,14 +305,14 @@ bal_ipw <- bal.tab(
 )
 
 ## Love plot (USE bal_ipw, not df)
-love.plot(
-  bal_ipw,
-  stat = "mean.diffs",
-  abs = TRUE,
-  thresholds = c(m = 0.1),
-  var.order = "unadjusted",
-  line = TRUE
-)
+# love.plot(
+#   bal_ipw,
+#   stat = "mean.diffs",
+#   abs = TRUE,
+#   thresholds = c(m = 0.1),
+#   var.order = "unadjusted",
+#   line = TRUE
+# )
 
 
 X <- model.matrix(
@@ -334,102 +329,1908 @@ bal_ipw2 <- bal.tab(
   s.d.denom = "pooled"
 )
 
+# love.plot(
+#   bal_ipw2,
+#   stat = "mean.diffs",
+#   abs = TRUE,
+#   thresholds = c(m = 0.1),
+#   var.order = "unadjusted",
+#   line = TRUE
+# )
+
 love.plot(
-  bal_ipw2,
+  list("IPW (ATE)" = bal_ipw, "OW (ATO)" = bal_ow),
   stat = "mean.diffs",
-  abs = TRUE,
-  thresholds = c(m = 0.1),
+  abs  = TRUE,
+  thresholds = c(m = .1),
   var.order = "unadjusted",
   line = TRUE
 )
-
 
 ```
 
 **Comments**
 
-We see that IPW drastically improves balance for most covariates. Race still remains poorly balanced and this because 1 race category has very limited overlap across physician groups. The threshold is 0.1
+We see that after applying the weights, nearly all covariates are at a good balance using the ASD $\leq$ 0.1. We see that IPW drastically improves balance for most covariates. Variable 'Race' still remains poorly balanced and this is because 1 race category has very limited overlap across physician groups. We cannot track any evidence of extreme IP weights given the threshold.
 
 
+## Part 1 Q1b
+
+```{r}
+
+## PS model  again
+ps_mod <- glm(
+  Z ~ i_age + i_sex + i_race + i_educ + i_insu + i_drug + i_seve + com_t + pcs_sd + mcs_sd,
+  data = df, family = binomial()
+)
+
+## store ps values
+df$e_hat <- predict(ps_mod, type = "response")
+
+## Weights
+df$w_ipw <- ifelse(df$Z==1, 1/df$e_hat, 1/(1-df$e_hat))      # ATE / IPW
+df$w_ow  <- ifelse(df$Z==1, 1-df$e_hat, df$e_hat)           # OW / overlap (ATO)
+
+
+pander(summary(df$w_ow), caption = "Summary for Overlap Weights")
+
+```
+
+
+
+
+```{r, fig.cap="This is a plot of propensity score distribution for the physician group.We see somewhat poor/weak overlap PS meaning control group has many PS near 0 while treatment group has few, which also creates extreme IPW weights."}
+
+df %>%
+  mutate(group = factor(Z, levels = c(0,1), labels = c("pg=2 (Z=0)", "pg=1 (Z=1)"))) %>%
+  ggplot(aes(x = e_hat, fill = group)) +
+  geom_histogram(position = "identity", alpha = 0.45, bins = 30) +
+  labs(x = "Estimated propensity score e(X)=P(Z=1|X)", y = "Count", fill = "Group",
+       title = "Propensity score distributions by physician group") +
+  theme_bw()
+
+```
+
+
+
+
+```{r, fig.cap="The figure shows the love plots for the covariates. It shows that weighting improves the covariate balance where almost all the ASDs are below 0.1." }
+
+w_mean <- function(x, w) sum(w*x) / sum(w)
+w_var  <- function(x, w) {
+  m <- w_mean(x, w)
+  sum(w*(x-m)^2) / sum(w)
+}
+
+asd_w <- function(x, z, w) {
+  x1 <- x[z==1]; x0 <- x[z==0]
+  w1 <- w[z==1]; w0 <- w[z==0]
+  m1 <- w_mean(x1, w1); m0 <- w_mean(x0, w0)
+  v1 <- w_var(x1, w1);  v0 <- w_var(x0, w0)
+  denom <- sqrt((v1+v0)/2)
+  abs(m1-m0)/denom
+}
+
+## Build design matrix (no intercept) so factors become dummies
+X <- model.matrix(
+  ~ i_age + i_sex + i_race + i_educ + i_insu + i_drug + i_seve + com_t + pcs_sd + mcs_sd,
+  data = df
+)[, -1, drop = FALSE]  # drop intercept
+
+asd_table <- function(w, label) {
+  tibble(
+    covariate = colnames(X),
+    ASD = apply(X, 2, function(x) asd_w(x, df$Z, w)),
+    scheme = label
+  )
+}
+
+asds <- bind_rows(
+  asd_table(rep(1, nrow(df)), "Unweighted"),
+  asd_table(df$w_ipw, "IPW (ATE)"),
+  asd_table(df$w_ow,  "OW (ATO)")
+)
+
+## Love plot using ggplot
+# asds %>%
+#   mutate(scheme = factor(scheme, levels = c("Unweighted","IPW (ATE)","OW (ATO)")),
+#          covariate = fct_reorder(covariate, ASD, max)) %>%
+#   ggplot(aes(x = ASD, y = covariate, shape = scheme)) +
+#   geom_point(size = 2.3) +
+#   geom_vline(xintercept = 0.1, linetype = "dashed") +
+#   labs(x = "Absolute Standardized Difference (ASD)", y = NULL, shape = NULL,
+#        title = "Love plot: balance before and after weighting") +
+#   theme_bw()
+
+love.plot(ps_mod, weights = list(IPW = df$w_ipw, OW = df$w_ow), stats = "mean.diffs",
+abs = TRUE, thresholds = 0.1, sample.names = c("Unweighted", "IPW","OW"), 
+title = "Covariate Balance by Love Plot",
+
+var.order = "unadjusted", stars = "std")
+
+```
+
+
+
+
+## Part 1 Q1c
 
 Overlap weighting (OW) which balances model covariates automatically
 
 We now; $e(X) = P(Z =1 \mid X)$
 
- - If Z=1: $w^{OW} = 1 - e(X)$
+ - If Z = 1: $w^{OW} = 1 - e(X)$
  
  - If Z = 0: $w^{OW} = e(X)$
 
+```{r}
+## Overlap weighting
 
+w_group_mean <- function(x, z, w, group_val) {
+  idx <- (z == group_val)
+  w_mean(x[idx], w[idx])
+}
+
+means_table <- function(w, label) {
+  tibble(
+    covariate = colnames(X),
+    mean_Z1 = apply(X, 2, function(x) w_group_mean(x, df$Z, w, 1)),
+    mean_Z0 = apply(X, 2, function(x) w_group_mean(x, df$Z, w, 0)),
+    scheme = label
+  )
+}
+
+tab_means <- bind_rows(
+  means_table(rep(1, nrow(df)), "Unweighted"),
+  means_table(df$w_ipw,         "IPW (ATE)"),
+  means_table(df$w_ow,          "OW (ATO)")
+) %>%
+  mutate(across(c(mean_Z1, mean_Z0), ~round(.x, 3))) %>%
+  arrange(covariate, scheme)
+
+pander(tab_means)
+
+
+tab_means_wide <- tab_means %>%
+  pivot_wider(
+    names_from = scheme,
+    values_from = c(mean_Z1, mean_Z0)
+  )
+
+pander(tab_means_wide)
+
+
+```
+
+\newpage
 
 ```{r}
 
-## Overlap weights (OW)
-df$w_ow <- ifelse(df$Z == 1, 1 - df$e_hat, df$e_hat)
 
-z <- df$Z  # make sure this exists
+## Build a covariate matrix that includes ALL factor levels
+X_cat <- model.matrix(
+  ~ 0 + i_sex + i_race + i_educ + i_insu + i_drug + i_seve,
+  data = df
+)
 
-## group-specific weights for ASD computation
-w1_ow <- 1 - df$e_hat
-w0_ow <- df$e_hat
+X <- cbind(
+  i_age  = df$i_age,
+  com_t  = df$com_t,
+  pcs_sd = df$pcs_sd,
+  mcs_sd = df$mcs_sd,
+  X_cat
+)
 
-## IMPORTANT: keep as data.frame
-out_ow <- out[, "covariate", drop = FALSE]
-out_ow$ASD_OW <- NA_real_
+z     <- df$Z
+w_ipw <- df$w_ipw
+w_ow  <- df$w_ow
 
-library(dplyr)
+wmean <- function(x, w) sum(w * x) / sum(w)
 
-out_ow <- out %>%
-  select(covariate) %>%
-  mutate(ASD_OW = NA_real_)
+## Compute unadjusted group means, overall, and weighted adjusted means 
+tab1 <- tibble(
+  
+  covariate = colnames(X),
+  
+  `Z=1`     = colMeans(X[z == 1, , drop = FALSE]),
+  
+  `Z=0`     = colMeans(X[z == 0, , drop = FALSE]),
+  
+  `Overall` = colMeans(X),
+  
+  `IPW`     = apply(X, 2, wmean, w = w_ipw),
+  
+  `OW`      = apply(X, 2, wmean, w = w_ow)
+) %>%
+  mutate(across(-covariate, ~ round(.x, 3)))
 
-## continuous
-out_ow[out_ow$covariate=="i_age",  "ASD_OW"] <- asd_cont(df$i_age,  z, w1_ow, w0_ow)
-out_ow[out_ow$covariate=="com_t",  "ASD_OW"] <- asd_cont(df$com_t,  z, w1_ow, w0_ow)
-out_ow[out_ow$covariate=="pcs_sd", "ASD_OW"] <- asd_cont(df$pcs_sd, z, w1_ow, w0_ow)
-out_ow[out_ow$covariate=="mcs_sd", "ASD_OW"] <- asd_cont(df$mcs_sd, z, w1_ow, w0_ow)
+##  other
+tab1 <- tab1 %>%
+  mutate(
+    covariate = gsub("^i_([a-z]+)(.*)$", "i_\\1\\2", covariate),
+    covariate = gsub("(i_sex|i_race|i_educ|i_insu|i_drug|i_seve)(.+)",
+                     "\\1 =\\2", covariate)
+  )
 
-## categorical (max over levels)
-out_ow[out_ow$covariate=="i_sex",  "ASD_OW"] <- asd_factor_max(df$i_sex,  z, w1_ow, w0_ow)
-out_ow[out_ow$covariate=="i_race", "ASD_OW"] <- asd_factor_max(df$i_race, z, w1_ow, w0_ow)
-out_ow[out_ow$covariate=="i_educ", "ASD_OW"] <- asd_factor_max(df$i_educ, z, w1_ow, w0_ow)
-out_ow[out_ow$covariate=="i_insu", "ASD_OW"] <- asd_factor_max(df$i_insu, z, w1_ow, w0_ow)
-out_ow[out_ow$covariate=="i_drug", "ASD_OW"] <- asd_factor_max(df$i_drug, z, w1_ow, w0_ow)
-out_ow[out_ow$covariate=="i_seve", "ASD_OW"] <- asd_factor_max(df$i_seve, z, w1_ow, w0_ow)
+##  creating the table in lecture notes
+N1 <- sum(z == 1)
+N0 <- sum(z == 0)
+N <- length(z)
 
-out_ow$ASD_OW <- round(out_ow$ASD_OW, 3)
-out_ow
+colnames(tab1) <- c(
+  "Covariate",
+  paste0("Group 1 (Z=1)\nN=", N1),
+  paste0("Group 2 (Z=0)\nN=", N0),
+  paste0("Overall\nN=", N),
+  "IPW weighted",
+  "Overlap weighted"
+)
+
+kable(tab1,
+      caption = "Table 1: Covariate means (unadjusted and weighted)") %>%
+  add_header_above(c(" " = 1, "Unadjusted" = 3, "Adjusted" = 2)) %>%
+  kable_styling(full_width = FALSE)
 
 ```
 
 
 
-For the weighted ATE under a user specified target population. Here outcome is i_aqoc
+## Part 1 Q1d
+
+To find ATE(IPW) and ATO(OW) using HT (non normalized) and Hajek (normalized)
+
+Let h(X) define the tilting function as the target population:
+
+ - IPW(ATE): h(X) = 1
+ 
+ - OW (ATO): h(X) = e(X){1-e(X)}
+ 
+and weights are;
+
+ - $w_1(X) = \dfrac{h(X)}{e(X)}$ for the treated (Z = 1)
+ 
+ - $w_0(X) = \dfrac{h(X)}{(1-e(X))}$ for the control (Z = 0)
+ 
+ 
+The estimators are;
+
+
+ - Non-normalized (HT)
+ 
+  $$\hat{\tau}_{h,1} = \dfrac{\sum w_1 ZY}{\sum h} - \dfrac{\sum w_0 (1-Z)Y}{\sum h}$$
+  
+  
+  
+  
+  
+ - Normalized (Hajek)
+ 
+    $$\hat{\tau}_{h,2} = \dfrac{\sum w_1 ZY}{\sum w_1 Z} - \dfrac{\sum w_0 (1-Z)Y}{\sum w_0 (1-Z)}$$
+    
+    
+```{r}
+
+set.seed(45)
+## Weighted ATE - WATE
+
+tau_hat <- function(y, z, e, h) {
+  w1 <- h / e
+  w0 <- h / (1 - e)
+
+   
+    denom <- sum(h)
+    mu1 <- sum(w1 * z * y)
+    mu0 <- sum(w0 * (1 - z) * y)
+    tau1 <- (mu1 - mu0) / denom
+  
+    denom1 <- sum(w1 * z)
+    denom0 <- sum(w0 * (1 - z))
+    
+    mu1 <- sum(w1 * z * y) / denom1
+    mu0 <- sum(w0 * (1 - z) * y) / denom0
+    tau2 <- mu1 - mu0
+    
+    c(tau1 =tau1, tau2 = tau2)
+}
+
+
+
+
+
+y <- df$i_aqoc   
+z <- as.factor(df$Z)
+e <- df$e_hat
+
+
+
+
+## ATE via IPW: h=1
+h_ate <- rep(1, length(e))
+
+## ATO via OW: h=e(1-e)
+h_ato <- e * (1 - e)
+
+
+
+y <- as.numeric(df$outcome)     
+z <- as.integer(df$Z == 1)      
+e <- as.numeric(df$e_hat)
+
+eps <- 1e-6
+e <- pmin(pmax(e, eps), 1 - eps)
+
+h_ate <- rep(1, length(e))
+h_ato <- e * (1 - e)
+
+
+
+estimates <- tibble(
+  estimand = c("ATE (IPW)","ATE (IPW)","ATO (OW)","ATO (OW)"),
+  version  = c("HT","Hajek","HT","Hajek"),
+  tau      = c(
+    tau_hat(y,z,e,h_ate)["tau1"],
+    tau_hat(y,z,e,h_ate)["tau2"],
+    tau_hat(y,z,e,h_ato)["tau1"],
+    tau_hat(y,z,e,h_ato)["tau2"]
+  )
+)
+
+estimates
+
+
+
+
+```
+
+**Bootstrap SE**
 
 ```{r}
 
-## 7) ATE estimates (Hajek / normalized)
+set.seed(456)
 
-y <- df$i_aqoc
+B <- 1000
 
-## IPW (ATE)
-p1_ipw <- weighted.mean(y[df$Z==1], w = (1/df$e_hat)[df$Z==1])
-p2_ipw <- weighted.mean(y[df$Z==0], w = (1/(1-df$e_hat))[df$Z==0])
-Q_ipw  <- p1_ipw - p2_ipw
+n <- length(y)
 
-## OW (overlap population)
-p1_ow <- weighted.mean(y[df$Z==1], w = (1-df$e_hat)[df$Z==1])
-p2_ow <- weighted.mean(y[df$Z==0], w = (df$e_hat)[df$Z==0])
-Q_ow  <- p1_ow - p2_ow
 
-c(p1_ipw=p1_ipw, p2_ipw=p2_ipw, Q_ipw=Q_ipw,
-  p1_ow=p1_ow,  p2_ow=p2_ow,  Q_ow=Q_ow)
+bootstrap_fun <- replicate(B, {
+  idx <- sample.int(n,n, replace = T)
+  y_b <- y[idx]
+  z_b <- z[idx]
+  e_b <- e[idx]
+  
+  ipw_b <- tau_hat(y_b,z_b,e_b,h = rep(1, length(e_b)))
+  
+  ow_b <- tau_hat(y_b,z_b,e_b, h = e_b * (1- e_b))
+  
+ 
+  
+  c(IPW_tau1 = ipw_b["tau1"],IPW_tau2 =ipw_b["tau2"], OW_tau1 = ow_b["tau1"], OW_tau2 = ow_b["tau2"])
+})
 
+
+## apply bootstrap function
+bootstrap_se <- apply(bootstrap_fun, 1, sd)
+
+
+
+
+results <- tibble(Estimator = c("ATE (IPW)","ATE (IPW)","ATO (OW)","ATO (OW)"), SE = as.numeric(bootstrap_se))
+
+
+
+kable(results)
+
+```
+
+
+
+
+
+```{r, eval=FALSE, include=FALSE}
+
+
+## ---- tau_hat (yours) ----
+tau_hat <- function(y, z, e, h) {
+
+  idx <- is.finite(y) & is.finite(z) & is.finite(e) & is.finite(h)
+  y <- y[idx]; z <- z[idx]; e <- e[idx]; h <- h[idx]
+
+  w1 <- h / e
+  w0 <- h / (1 - e)
+
+  # HT (non-normalized)
+  denom <- sum(h)
+  mu1 <- sum(w1 * z * y)
+  mu0 <- sum(w0 * (1 - z) * y)
+  tau1 <- (mu1 - mu0) / denom
+
+  # Hajek (normalized)
+  denom1 <- sum(w1 * z)
+  denom0 <- sum(w0 * (1 - z))
+  mu1 <- sum(w1 * z * y) / denom1
+  mu0 <- sum(w0 * (1 - z) * y) / denom0
+  tau2 <- mu1 - mu0
+
+  c(tau1 = tau1, tau2 = tau2)
+}
+
+## ---- inputs (make sure z is 0/1 numeric!) ----
+y <- as.numeric(df$i_aqoc)           # or df$outcome
+z <- as.integer(df$Z == 1)           # MUST be 0/1
+e <- as.numeric(df$e_hat)
+
+eps <- 1e-6
+e <- pmin(pmax(e, eps), 1 - eps)
+
+h_ate <- rep(1, length(e))
+h_ato <- e * (1 - e)
+
+## ---- point estimates (4 numbers in a named vector) ----
+pt <- c(
+  IPW_tau1 = tau_hat(y, z, e, h_ate)["tau1"],
+  IPW_tau2 = tau_hat(y, z, e, h_ate)["tau2"],
+  OW_tau1  = tau_hat(y, z, e, h_ato)["tau1"],
+  OW_tau2  = tau_hat(y, z, e, h_ato)["tau2"]
+)
+
+## ---- bootstrap SEs (replicate; returns matrix 4 x B) ----
+set.seed(123)
+B <- 1000
+n <- length(y)
+
+boot_mat <- replicate(B, {
+  idx <- sample.int(n, n, replace = TRUE)
+  y_b <- y[idx]; z_b <- z[idx]; e_b <- e[idx]
+  e_b <- pmin(pmax(e_b, eps), 1 - eps)
+
+  ipw_b <- tau_hat(y_b, z_b, e_b, h = rep(1, length(e_b)))
+  ow_b  <- tau_hat(y_b, z_b, e_b, h = e_b * (1 - e_b))
+
+  c(
+    IPW_tau1 = ipw_b["tau1"],
+    IPW_tau2 = ipw_b["tau2"],
+    OW_tau1  = ow_b["tau1"],
+    OW_tau2  = ow_b["tau2"]
+  )
+})
+
+boot_se <- apply(boot_mat, 1, sd, na.rm = TRUE)
+
+## ---- final combined table (est + SE) ----
+final_tab <- tibble(
+  Estimand  = c("ATE (IPW)", "ATE (IPW)", "ATO (OW)", "ATO (OW)"),
+  Version   = c("HT", "Hajek", "HT", "Hajek"),
+  Estimate  = as.numeric(pt[c("IPW_tau1","IPW_tau2","OW_tau1","OW_tau2")]),
+  Boot_SE   = as.numeric(boot_se[c("IPW_tau1","IPW_tau2","OW_tau1","OW_tau2")])
+) %>%
+  mutate(across(c(Estimate, Boot_SE), ~round(.x, 4)))
+
+kable(final_tab, caption = "Weighted ATE/ATO estimates with bootstrap standard errors") %>%
+  kable_styling(full_width = FALSE)
+```
+
+
+**Comments**
+
+IPW (ATE) vs OW (ATO)
+
+ -  Different estimands: IPW targets the ATE over the full covariate distribution (full population); OW targets the ATO over the overlap population where both groups are plausible.
+ 
+ - Variance/stability: IPW can have large variance if some $\hat{e}(X)$'s are near 0/1 which implies huge weights. OW downweights extremes and is usually more stable with better balance.
+ 
+Under the Normalized Hajek vs Non-normalized HT within a scheme;
+
+ - HT uses $\sum h(X_i)$ in the denominator (stays the same for both groups); it is more sensitive to weight variability.
+ 
+ - Hajek normalizes within treatment groups; it often has smaller variance and better finite-sample behavior.
+ 
+ - The can differ noticeably when weights are highly variable or overlap is weak.
+ 
+ 
+ 
+  
+## Part 1 Q2
+
+The estimand we want is 
+
+$$E[Y(1) | V = 1] - E[Y(2)|V  = 1]$$
+
+```{r}
+set.seed(67)
+
+idx <- as.character(df$i_sex) == "1"
+
+cat("\n counts of treated in V= 1: \n")
+
+print(table(df$Z[idx]))
+
+
+Z1 <- df$Z[idx]
+Y1 <- df$outcome[idx]
+e <- df$e_hat[idx]
+
+
+## IPW estimator for question 2
+ipw_2 <- function(Z, Y, e) {
+  eps <- 1e-6
+  e <- pmin(pmax(e, eps), 1- eps)
+  w1 <- 1/e
+  w0 <- 1/(1-e)
+  
+  tau1 <- mean(w1 * Z * Y) - mean(w0 * (1 - Z) * Y)
+  tau2 <- sum(w1 * Z * Y)/sum(w1 * Z) - sum(w0 * (1 - Z) * Y)/sum(w0 * (1 - Z))
+  
+  c(tau1 = tau1, tau2 = tau2)
+}
+
+```
+
+2a. We fit PS using all data including V, then do IPW within V = 1. Reason being the PS model be $e(X,V)= p(z =1|x,V)$. Then restricting to V = 1 and weighing by $\dfrac{1}{e(X)}$ and $\dfrac{1}{(1-e(X))}$ identifies the subgroup causal effect.
+
+```{r}
+a_ps <-  glm(Z ~ i_age + i_sex + i_race + i_educ + i_insu + i_drug + i_seve + com_t + pcs_sd + mcs_sd,
+  data = df, family = binomial())
+
+e_a <- predict(a_ps, type = "response")
+a_est <- ipw_2(Z1, Y1, e_a[idx])
+```
+
+
+2b. Fitting PS excluding V, then do IPW within V = 1
+
+In general it is wrong unless $Z \perp V \mid X$ (i.e V adds no information about treatment given X). Reason: If treatment depends on V beyond X, then using e(X) instead of e(X,V) does not balance V-related treatment selection inside the subgroup.
+
+```{r}
+b_ps <-  glm(Z ~ i_age + i_race + i_educ + i_insu + i_drug + i_seve + com_t + pcs_sd + mcs_sd,
+  data = df, family = binomial())
+
+e_b <- predict(b_ps, type = "response")
+
+b_est <- ipw_2(Z1, Y1, e_b[idx])
+```
+
+
+2c. Restrict to V = 1, the estimates PS within V = 1 excluding V then IPW: This is correct because within subgroup, the correct PS is $e_{V=1} (X) =  P(Z = 1\mid X, V = 1)$. Estimating it using only V = 1 data is fine (often better) and then IPW targets that subgroup
+
+```{r}
+c_ps <-  glm(Z ~ i_age + i_race + i_educ + i_insu + i_drug + i_seve + com_t + pcs_sd + mcs_sd,
+  data = df[idx,], family = binomial())
+
+e_c <- predict(c_ps, type = "response")
+c_est <- ipw_2(Z1, Y1, e_c)
+```
+
+
+```{r}
+
+comp <- data.frame(
+Method = c("(a) PS includes V; IPW in V=1",
+"(b) PS excludes V; IPW in V=1",
+"(c) PS fit within V=1 (excl V); IPW in V=1"),
+tau1 = c(a_est["tau1"], b_est["tau1"], c_est["tau1"]),
+tau2 = c(a_est["tau2"], b_est["tau2"], c_est["tau2"])
+)
+comp$tau1 <- round(comp$tau1, 4)
+comp$tau2 <- round(comp$tau2, 4)
+
+
+print(comp, row.names = FALSE)
+```
+
+
+ **Bootstrap SE**
+ 
+```{r}
+boot_se_fixed_e <- function(Y, Z, e, B = 1000){
+n <- length(Y)
+boots <- replicate(B, {
+ii <- sample.int(n, n, replace = TRUE)
+ipw_2(Z[ii], Y[ii], e[ii])
+})
+apply(boots, 1, sd)
+}
+
+se_a <- boot_se_fixed_e(Y1, Z1, e_a[idx], B = 1000)
+se_c <- boot_se_fixed_e(Y1, Z1, e_c, B = 1000)
+cat("\nBootstrap SEs (correct methods):\n")
+
+cat("Method (a): SE(tau1) =", round(se_a["tau1"], 4), " SE(tau2) =",
+round(se_a["tau2"], 4), "\n")
+
+cat("Method (c): SE(tau1) =", round(se_c["tau1"], 4), " SE(tau2) =",
+round(se_c["tau2"], 4), "\n")
+```
+ 
+ 
+```{r, eval=FALSE, include=FALSE}
+boot_q2 <- function(df, B=500, seed=123, eps=1e-6) {
+  set.seed(seed)
+  n <- nrow(df)
+  out <- matrix(NA_real_, nrow=B, ncol=3)
+  colnames(out) <- c("a","b","c")
+
+  b <- 1
+  while (b <= B) {
+    idx <- sample.int(n, n, replace=TRUE)
+    d <- df[idx, , drop=FALSE]
+
+    ## restore factor levels
+    for (v in names(global_levels)) {
+      d[[v]] <- factor(d[[v]], levels = global_levels[[v]])
+    }
+
+    ## need both treatment groups INSIDE V=1
+    dV1 <- d[d$V1==1, , drop=FALSE]
+    if (nrow(dV1) < 10) next
+    if (length(unique(dV1$Z)) < 2) next
+
+    est <- tryCatch(fit_and_estimate(d), error=function(e) NULL)
+    if (is.null(est)) next
+
+    ## bound checks can be added inside fit_and_estimate if needed
+    out[b,] <- est
+    b <- b + 1
+  }
+
+  se <- apply(out, 2, sd, na.rm=TRUE)
+  list(reps=out, se=se)
+}
+
+bs2 <- boot_q2(df, B=500, seed=123)
+bs2$se
+
+## Summary table
+res_q2 <- data.frame(
+  method = c("(a) PS includes V; weight within V=1",
+             "(b) PS excludes V; weight within V=1",
+             "(c) Fit PS within V=1 (exclude V)"),
+  estimate = unname(point_est),
+  boot_se  = c(bs2$se["a"], bs2$se["b"], bs2$se["c"])
+)
+res_q2
+
+```
+
+ **Comments**
+ 
+ The correct method are a and c; a is correct because it uses the correct PS e(X,V) and then targets the subgroup V =1. C is correct because within the subgroup V = 1, the relevant PS is $P(Z = 1 \mid X,V = 1)$, which is exactly what c estimates. b is not generally correct because it uses e(X) rather than e(X,V); if treatment assignment differs by sex beyond other covariates, it fails to balance the selection mechanism for the subgroup effect.
+ 
+ 
+## Part 1 Q3
+ 
+Outcome here is Y = i_aqoc (1 satisfied, 0 not). The target estimand is the marginal casual odds ratio. 
+ $$Q = \dfrac{p_1 (1-p_1)}{p_2 (1-p_2)}$$ , $$p_z = Pr (Y(z) = 1)$$
+ 
+
+```{r, warning=FALSE, message=FALSE}
+
+# re load data
+df <- read.table("D:/WashU/PHD/Year 2/Sem 2/SDS 5320/Homework/PS2_data.txt", header = TRUE)
+
+y  <- df$i_aqoc
+z1 <- as.integer(df$pg == 1)   
+
+# X covariates
+Xvars <- c("i_age","i_sex","i_race","i_educ","i_insu","i_drug","i_seve",
+           "com_t","pcs_sd","mcs_sd")
+
+dat <- df[, c("i_aqoc","pg",Xvars)]
+dat$y  <- y
+dat$z1 <- z1
+dat <- dat[complete.cases(dat[, c("y","z1",Xvars)]), ]
+
+# set as character
+for(v in Xvars){
+  if(is.character(dat[[v]])) dat[[v]] <- factor(dat[[v]])
+}
+for(v in Xvars){
+  if(is.factor(dat[[v]])) dat[[v]] <- factor(dat[[v]], levels = levels(dat[[v]]))
+}
+
+or_from_p <- function(p1,p2) (p1*(1-p2)) / (p2*(1-p1))
+
+
+# Outcome model: y ~ z1 * X  but fitted on a full-rank matrix
+
+fit_outcome <- function(d){
+  # build model matrix with fixed factor levels
+  f <- as.formula(paste0("~ z1 * (", paste(Xvars, collapse=" + "), ")"))
+  X <- model.matrix(f, data=d)
+  
+  keep <- qr(X)$pivot[seq_len(qr(X)$rank)]
+  Xr <- X[, keep, drop=FALSE]
+
+  glm.fit(x = Xr, y = d$y, family = binomial())
+}
+
+## prediction function
+pred_outcome <- function(fit, d, zval){
+  f <- as.formula(paste0("~ z1 * (", paste(Xvars, collapse=" + "), ")"))
+  d2 <- d
+  d2$z1 <- zval
+  X <- model.matrix(f, data=d2)
+  # match columns used in fit
+  X <- X[, colnames(fit$xlevels %||% fit$coefficients) , drop=FALSE] 
+}
+
+# safer predict 
+predict_from_fit <- function(fit, d, zval){
+  f <- as.formula(paste0("~ z1 * (", paste(Xvars, collapse=" + "), ")"))
+  d2 <- d; d2$z1 <- zval
+  X <- model.matrix(f, data=d2)
+
+  # fit using glm.fit 
+  Xr <- X[, fit$Xcols, drop=FALSE]
+  as.numeric(plogis(Xr %*% fit$coefficients))
+}
+
+## the other option fit function
+fit_outcome2 <- function(d){
+  f <- as.formula(paste0("~ z1 * (", paste(Xvars, collapse=" + "), ")"))
+  X <- model.matrix(f, data=d)
+
+  keep <- qr(X)$pivot[seq_len(qr(X)$rank)]
+  Xr <- X[, keep, drop=FALSE]
+
+  
+  Xr <- as.matrix(Xr)
+  storage.mode(Xr) <- "double"
+
+  fit <- glm.fit(x = Xr, y = d$y, family = binomial())
+
+  fit$Xcols <- colnames(Xr)
+  fit$Xmat  <- Xr         
+  fit
+}
+
+
+```
+
+## Part 1 Q3a
+
+```{r}
+## estimation
+est_a <- function(d){
+  fit <- fit_outcome2(d)
+  if(!("z1" %in% names(fit$coefficients))) return(c(est=NA_real_, se=NA_real_))
+
+  delta <- fit$coefficients["z1"]
+
+  X  <- fit$Xmat
+  mu <- as.numeric(fit$fitted.values)
+  W  <- mu * (1 - mu)
+
+  # X' W X where W is diagonal =
+  Xw <- X * sqrt(W)
+  XtWX <- crossprod(Xw)
+
+  V <- tryCatch(solve(XtWX), error=function(e) NULL)
+  if(is.null(V)) return(c(est=exp(delta), se=NA_real_))
+
+  j <- which(colnames(X) == "z1")
+  se_delta <- sqrt(V[j, j])
+
+  c(est = exp(delta), se = exp(delta) * se_delta)
+}
+
+
+```
+
+## Part 1 Q3b
+
+```{r}
+# average f(x,z) over X in that group
+est_b <- function(d){
+  fit <- fit_outcome2(d)
+  if(any(is.na(fit$coefficients))) return(c(est=NA_real_))
+  p1 <- mean(predict_from_fit(fit, d[d$z1==1, , drop=FALSE], 1))
+  p2 <- mean(predict_from_fit(fit, d[d$z1==0, , drop=FALSE], 0))
+  c(est = or_from_p(p1,p2))
+}
+
+
+```
+
+
+## Part 1 Q3c
+
+**PS Stratification**
+
+```{r}
+# average f(x,z) over ALL X
+est_c <- function(d){
+  fit <- fit_outcome2(d)
+  if(any(is.na(fit$coefficients))) return(c(est=NA_real_))
+  p1 <- mean(predict_from_fit(fit, d, 1))
+  p2 <- mean(predict_from_fit(fit, d, 0))
+  c(est = or_from_p(p1,p2))
+}
+
+
+# Propensity score strata (5 blocks)
+
+fit_ps <- function(d){
+  f <- as.formula(paste0("~ ", paste(Xvars, collapse=" + ")))
+  X <- model.matrix(f, data=d)
+  keep <- qr(X)$pivot[seq_len(qr(X)$rank)]
+  Xr <- X[, keep, drop=FALSE]
+  fit <- glm.fit(x=Xr, y=d$z1, family=binomial())
+  fit$Xcols <- colnames(Xr)
+  list(fit=fit, f=f)
+}
+
+predict_ps <- function(ps, d){
+  X <- model.matrix(ps$f, data=d)
+  Xr <- X[, ps$fit$Xcols, drop=FALSE]
+  as.numeric(plogis(Xr %*% ps$fit$coefficients))
+}
+
+make_strata5 <- function(d){
+  ps <- fit_ps(d)
+  e  <- predict_ps(ps, d)
+  cuts <- unique(as.numeric(quantile(e, probs=seq(0,1,0.2), na.rm=TRUE)))
+  if(length(cuts) < 3) return(rep(1L, nrow(d))) # degenerate case
+  cut(e, breaks=cuts, include.lowest=TRUE, labels=FALSE)
+}
+
+
+```
+
+## Part 1 Q3d
+
+```{r}
+# compute Odds Ratio within each stratum and take average 
+est_d <- function(d){
+  S <- make_strata5(d)
+  ors <- c()
+  for(s in sort(unique(S))){
+    ds <- d[S==s, ]
+    if(length(unique(ds$z1)) < 2) next
+    a <- sum(ds$y==1 & ds$z1==1)
+    b <- sum(ds$y==0 & ds$z1==1)
+    c0<- sum(ds$y==1 & ds$z1==0)
+    d0<- sum(ds$y==0 & ds$z1==0)
+    if(any(c(a,b,c0,d0)==0)){ a<-a+0.5; b<-b+0.5; c0<-c0+0.5; d0<-d0+0.5 }
+    ors <- c(ors, (a*d0)/(b*c0))
+  }
+  if(length(ors)==0) return(c(est=NA_real_))
+  c(est = mean(ors))
+}
+
+
+```
+
+## Part 1 Q3e
+```{r}
+# within each stratum, we compute p1s, p2s and take block averages
+# to get OR from p1,p2
+
+est_e <- function(d){
+  S <- make_strata5(d)
+  p1s <- p2s <- c()
+  for(s in sort(unique(S))){
+    ds <- d[S==s, ]
+    if(length(unique(ds$z1)) < 2) next
+    p1s <- c(p1s, mean(ds$y[ds$z1==1]))
+    p2s <- c(p2s, mean(ds$y[ds$z1==0]))
+  }
+  if(length(p1s)==0) return(c(est=NA_real_))
+  p1 <- mean(p1s); p2 <- mean(p2s)
+  c(est = or_from_p(p1,p2))
+}
+
+
+#  bootstrap 
+
+boot_se <- function(d, est_fun, B=500, seed=1){
+  set.seed(seed)
+  n <- nrow(d)
+  vals <- replicate(B, {
+    idx <- sample.int(n, n, replace=TRUE)
+    out <- tryCatch(est_fun(d[idx, , drop=FALSE]), error=function(e) c(est=NA_real_))
+    as.numeric(out["est"])
+  })
+  sd(vals, na.rm=TRUE)
+}
+
+
+# Compute results for a,b,c,d and e
+
+A <- est_a(dat)
+B <- c(est_b(dat), se=boot_se(dat, est_b))
+C <- c(est_c(dat), se=boot_se(dat, est_c))
+D <- c(est_d(dat), se=boot_se(dat, est_d))
+E <- c(est_e(dat), se=boot_se(dat, est_e))
+
+out <- data.frame(
+  method = c("a","b","c","d","e"),
+  OR_hat = c(A["est"], B["est"], C["est"], D["est"], E["est"]),
+  SE     = c(A["se"],  B["se"],  C["se"],  D["se"],  E["se"])
+)
+kable(out, caption = "Estimates for 3a - 3e")
+```
+
+
+ **Comment**
+ 
+ (c) is the correct one among (a)-(c):
+ 
+ - It computes $p_1 = E[f(X,1)]$ and $p_2 = E[f(X,0)]$ over the same target covariate distribution (overall sample), then forms the OR.
+ 
+ - Under the assumed correct model, this is standard g-computation/standardization for a marginal estimand.
+ 
+ 
+(e) is also correct as a stratified standardization approach (approximation)
+
+ - Within each PS block, estimate $p_{1k}, p_{2k}$, then average across blocks (weighted by block sizes) to get $p_1, p_2$. then compute OR.
+ 
+ - With sufficiently fine stratification, this approximates the same standardization target.
+ 
+ 
+These are not generally correct
+
+ (a) is not the marginal OR $Q$
+ 
+ - $exp(\delta)$ is a conditional odds ratio (and with interactions the conditional OR varies with X anyways).
+ 
+ - Odds ratios are non-collapsible, so conditional OR $\ne$ marginal OR in general.
+ 
+(b) is not the target because it averages over different covariate distribution (group 1's X distribution for p1 and group 2's X distribution for p2). That does not correspond to $p_1 = Pr(Y(1) = 1)$ and $p_2 = Pr(Y(1) = 1)$ on a common target population.
+
+
+(d) is not correct because "average of stratum OR's is not valid aggregation for a marginal OR. If you want a stratification-based OR, the classical approach is Mantel-Haenszel OR, not a simple mean.
+
+
+
+## Part 1 Q4
+
+\includepdf[pages=1-3]{D:/WashU/PHD/Year 2/Sem 2/SDS 5320/Homework/Homework2gifty_causal.pdf}
+
+
+## Part 2
+
+```{r}
+# Treatment
+df$Z <- as.integer(df$pg == 1)
+
+# Outcome
+df$Y <- df$i_aqoc
+
+# Pre-treatment (X covariates)
+Xvars <- c("i_age","i_sex","i_race","i_educ","i_insu","i_drug","i_seve",
+           "com_t","pcs_sd","mcs_sd")
+
+dat <- df[, c("Y","Z",Xvars)]
+dat <- dat[complete.cases(dat), ]
+
+
+for(v in Xvars){
+  if(is.character(dat[[v]])) dat[[v]] <- factor(dat[[v]])
+  if(is.factor(dat[[v]])) dat[[v]] <- factor(dat[[v]], levels=levels(dat[[v]]))
+}
+
+# Turn X into numeric matrix 
+Xmm <- model.matrix(as.formula(paste0("~ ", paste(Xvars, collapse=" + "))), data=dat)
+Xmm <- Xmm[, -1, drop=FALSE]  # drop intercept
+Xmm <- as.matrix(Xmm); storage.mode(Xmm) <- "double"
+
+Y <- dat$Y
+Z <- dat$Z
+N <- nrow(dat)
+```
+
+
+## Part 2 Q1a
+
+\includepdf[pages=4-7]{D:/WashU/PHD/Year 2/Sem 2/SDS 5320/Homework/Homework2gifty_causal.pdf}
+
+```{r, eval=FALSE, include=FALSE}
+# 1(a) Tuning parameters in matching
+
+cat("\n1(a) Tuning choices in matching (>=4):\n")
+cat("  (i) Number of neighbors M: larger M -> lower variance, higher bias (worse matches), more compute.\n")
+cat(" (ii) Replacement (TRUE/FALSE): replacement reduces bias (better matches), can increase variance via high reuse; faster/stable.\n")
+cat("(iii) Caliper / tolerance (on distance or PS): tighter caliper reduces bias, may increase variance and drop units (less overlap).\n")
+cat(" (iv) Distance metric / scaling (Euclidean vs Mahalanobis; standardization): affects bias (quality of matches) and compute.\n")
+cat("  (v) Exact / coarsened exact matching on key covariates: reduces bias but may discard many units (variance increases).\n")
+cat(" (vi) Common support trimming: reduces extrapolation bias; reduces sample size -> higher variance.\n\n")
+```
+
+
+## Part 2 Q2
+
+```{r}
+
+
+# normalized Euclidean distance 
+# Lets define s_p = SD of (X_ip - X_i'p) across all pairs (i,i').
+# For a covariate x, Var(x_i - x_j) = 2 Var(x) over all unordered pairs,
+# so SD(diff) = sqrt(2) * sd(x). 
+scaled_X_for_covmatch <- function(X){
+  s <- apply(X, 2, sd)
+  s_diff <- sqrt(2) * s
+  s_diff[s_diff == 0] <- 1  
+  Xs <- sweep(X, 2, s_diff, "/")
+  list(Xs = Xs, s_diff = s_diff)
+}
+
+# distance matrix between treated and controls using fast formula
+
+dist2_between <- function(A, B){
+  # A: nA x p, B: nB x p
+  # ||a-b||^2 = ||a||^2 + ||b||^2 - 2 a b'
+  aa <- rowSums(A^2)
+  bb <- rowSums(B^2)
+  cross <- A %*% t(B)
+  outer(aa, bb, "+") - 2 * cross
+}
+
+# Get M nearest indices in each row of a distance matrix
+
+topM_cols <- function(D, M){
+  t(apply(D, 1, function(row) order(row, decreasing=FALSE)[1:M]))
+}
+
+# Compute ATE  mean(Yhat(1) - Yhat(0))
+
+ate_from_matches <- function(Y, Z, match_ctrl_for_treat, match_treat_for_ctrl){
+
+  nT <- sum(Z==1); nC <- sum(Z==0)
+
+  Yhat1 <- numeric(length(Y))
+  Yhat0 <- numeric(length(Y))
+
+  # treated units: observe Y(1), impute Y(0)
+  tr_idx <- which(Z==1)
+  Yhat1[tr_idx] <- Y[tr_idx]
+  Yhat0[tr_idx] <- rowMeans(matrix(Y[match_ctrl_for_treat], nrow=nT))
+
+  # control units: observe Y(0), impute Y(1)
+  co_idx <- which(Z==0)
+  Yhat0[co_idx] <- Y[co_idx]
+  Yhat1[co_idx] <- rowMeans(matrix(Y[match_treat_for_ctrl], nrow=nC))
+
+  mean(Yhat1 - Yhat0)
+}
+
+# Max reuse count K_M(i) = number of times unit i is used as a match for others
+max_reuse <- function(match_mat, pool_indices){
+  # match_mat is n x M, entries are indices into full sample
+  tab <- table(factor(as.vector(match_mat), levels = pool_indices))
+  max(as.integer(tab))
+}
+
+```
+
+
+
+## Part 2 Q2a
+
+Distance in prompt;
+
+$$d(i,i^{'}) = \sqrt{\sum_{p=1}^P \dfrac{(X_{ip} - X_{i^{'}p})}{s_p^2}}$$
+
+
+We implement nearest neighbors from the opposite treatment group for each unit; 
+
+```{r}
+
+# Own covariate matching (normalized Euclidean distance)
+
+own_covariate_matching <- function(Y, Z, X, M){
+  sc <- scaled_X_for_covmatch(X)
+  Xs <- sc$Xs
+
+  tr_idx <- which(Z==1)
+  co_idx <- which(Z==0)
+  Xt <- Xs[tr_idx, , drop=FALSE]
+  Xc <- Xs[co_idx, , drop=FALSE]
+
+  D2_tc <- dist2_between(Xt, Xc)        
+
+  # For each treated, choose M controls
+  nn_ctrl_cols <- topM_cols(D2_tc, M)   
+  match_ctrl_for_treat <- matrix(co_idx[nn_ctrl_cols], nrow=nrow(nn_ctrl_cols))
+
+  # For each control, choose M treated 
+  D2_ct <- t(D2_tc)                     
+  nn_tr_cols <- topM_cols(D2_ct, M)     
+  match_treat_for_ctrl <- matrix(tr_idx[nn_tr_cols], nrow=nrow(nn_tr_cols))
+
+  ate_hat <- ate_from_matches(Y, Z, match_ctrl_for_treat, match_treat_for_ctrl)
+
+  # reuse counts across all matchings 
+  max_reuse_ctrl <- max_reuse(match_ctrl_for_treat, pool_indices = co_idx)
+  max_reuse_tr   <- max_reuse(match_treat_for_ctrl, pool_indices = tr_idx)
+  max_reuse_all  <- max(max_reuse_ctrl, max_reuse_tr)
+
+  list(ate = ate_hat, max_reuse = max_reuse_all)
+}
+
+Ms <- c(1,4,8)
+res_2a <- do.call(rbind, lapply(Ms, function(M){
+  out <- own_covariate_matching(Y, Z, Xmm, M)
+  data.frame(method="Own covariate match", M=M, ATE_hat=out$ate, max_reuse=out$max_reuse)
+}))
+print(res_2a)
+
+
+```
+
+ 
+ **ATE estimator**
+ 
+ Given matches $M_i$, the prompt's imputation is:
+ 
+  - If $Z_i = 1: \hat{Y}_i(1) = Y_i, \hat{Y}(0) = \frac{1}{M} \sum_{j \in M_i} Y_j$
+  
+  - If $Z_i = 0: \hat{Y}_i(0) = Y_i, \hat{Y}(1) = \frac{1}{M} \sum_{j \in M_i} Y_j$
+  
+  
+  
+  
+ATE :
+
+$$\hat{\tau}_M^{ATE} = \frac{1}{N} \sum_{i=1}^N (\hat{Y}_i(1) - \hat{Y}_i(0))$$
+
+Reuse Count:
+
+$$K_M (i) = \sum_{j=1}^N 1 \{i \in M_j\}$$ , $$\text{max}_i K_M(i)$$
+## Part 2 Q2b
+
+```{r}
+
+# Own propensity score matching with |e_i - e_j|
+
+own_ps_matching <- function(Y, Z, X, M){
+  # full-rank fit for PS
+  keep <- qr(X)$pivot[seq_len(qr(X)$rank)]
+  Xr <- X[, keep, drop=FALSE]
+  fit_ps <- glm.fit(x=Xr, y=Z, family=binomial())
+  ehat <- as.numeric(plogis(Xr %*% fit_ps$coefficients))
+
+  tr_idx <- which(Z==1)
+  co_idx <- which(Z==0)
+  et <- ehat[tr_idx]
+  ec <- ehat[co_idx]
+
+  # distance matrices 
+  D_tc <- abs(outer(et, ec, "-"))   
+  nn_ctrl_cols <- topM_cols(D_tc, M)
+  match_ctrl_for_treat <- matrix(co_idx[nn_ctrl_cols], nrow=nrow(nn_ctrl_cols))
+
+  D_ct <- t(D_tc)                   
+  nn_tr_cols <- topM_cols(D_ct, M)
+  match_treat_for_ctrl <- matrix(tr_idx[nn_tr_cols], nrow=nrow(nn_tr_cols))
+
+  ate_hat <- ate_from_matches(Y, Z, match_ctrl_for_treat, match_treat_for_ctrl)
+
+  max_reuse_ctrl <- max_reuse(match_ctrl_for_treat, pool_indices = co_idx)
+  max_reuse_tr   <- max_reuse(match_treat_for_ctrl, pool_indices = tr_idx)
+  max_reuse_all  <- max(max_reuse_ctrl, max_reuse_tr)
+
+  list(ate = ate_hat, max_reuse = max_reuse_all, ehat = ehat)
+}
+
+res_2b <- do.call(rbind, lapply(Ms, function(M){
+  out <- own_ps_matching(Y, Z, Xmm, M)
+  data.frame(method="Own PS match", M=M, ATE_hat=out$ate, max_reuse=out$max_reuse)
+}))
+print(res_2b)
+
+```
+
+
+## Part 2 Q2c
+
+```{r}
+
+# Using Matching package: covariate + PS matching, M in {1,4,8}
+
+if(!requireNamespace("Matching", quietly=TRUE)) install.packages("Matching")
+library(Matching)
+
+# For Matching::Match, X must be numeric matrix.
+# Covariate matching: use Xmm variable.
+# PS matching: use ehat from PS model above.
+
+# compute ehat 
+keep <- qr(Xmm)$pivot[seq_len(qr(Xmm)$rank)]
+Xr <- Xmm[, keep, drop=FALSE]
+fit_ps <- glm.fit(x=Xr, y=Z, family=binomial())
+ehat <- as.numeric(plogis(Xr %*% fit_ps$coefficients))
+
+
+
+match_pkg_run <- function(Y, Z, X, M){
+  mout <- Match(Y=Y, Tr=Z, X=X, M=M, replace=TRUE, estimand="ATE")
+
+  data.frame(
+    M   = M,
+    est = as.numeric(mout$est),
+    se  = as.numeric(mout$se)
+  )
+}
+
+res_cov_pkg <- do.call(rbind, lapply(Ms, function(M) match_pkg_run(Y, Z, Xmm, M)))
+res_cov_pkg$method <- "Matching pkg: covariate"
+
+res_ps_pkg  <- do.call(rbind, lapply(Ms, function(M) match_pkg_run(Y, Z, matrix(ehat, ncol=1), M)))
+res_ps_pkg$method <- "Matching pkg: PS"
+
+res_2c <- rbind(res_cov_pkg, res_ps_pkg)
+res_2c <- res_2c[, c("method","M","est","se")]
+print(res_2c)
+
+
+mout <- Match(Y=Y, Tr=Z, X=Xmm, M=1, replace=TRUE, estimand="ATE")
+summary(mout)  
+mout$est; mout$se
+```
+
+
+```{r}
+#
+# Compare estimates (own vs package)
+
+cmp <- merge(
+  rbind(
+    transform(res_2a, est=ATE_hat)[, c("method","M","est","max_reuse")],
+    transform(res_2b, est=ATE_hat)[, c("method","M","est","max_reuse")]
+  ),
+  res_2c,
+  by=c("M"),
+  all=TRUE,
+  suffixes=c(".own",".pkg")
+)
+print(cmp)
+
+
+```
+**comment**
+
+
+ - Matching library uses its own variance estimator but my implementation do not compute SEs.
+ 
+ - The Package may break ties differently and uses internal ordering; small differences in matches can shift the estimate.
+ 
+ - My covariate distance uses $SD(diff) = \sqrt{2}*sd(x)$ scaling.
+ 
+ - With replacement, high max_reuse indicates a few good controls/treated are reused often meaning lower bias and higher variance.
+
+
+## Part 2 Q3
+
+```{r}
+df <- read.table("D:/WashU/PHD/Year 2/Sem 2/SDS 5320/Homework/PS2_data.txt", header = TRUE)
+df$Z <- as.integer(df$pg == 1)   
+df$Y <- df$i_aqoc                
+
+# Pre-treatment covariates
+Xvars <- c("i_age","i_sex","i_race","i_educ","i_insu","i_drug","i_seve",
+           "com_t","pcs_sd","mcs_sd")
+
+dat <- df[, c("Y","Z",Xvars)]
+dat <- dat[complete.cases(dat), ]
+
+# Make characters 
+for(v in Xvars){
+  if(is.character(dat[[v]])) dat[[v]] <- factor(dat[[v]])
+  if(is.factor(dat[[v]])) dat[[v]] <- factor(dat[[v]], levels = levels(dat[[v]]))
+}
+
+Y <- dat$Y
+Z <- dat$Z
+N <- nrow(dat)
+
+# Numeric design matrix for distances
+Xmm <- model.matrix(as.formula(paste0("~ ", paste(Xvars, collapse=" + "))), data=dat)
+Xmm <- Xmm[, -1, drop=FALSE] 
+Xmm <- as.matrix(Xmm); storage.mode(Xmm) <- "double"
+
+Ms <- c(1,4,8)
+
+
+# distances + nearest neighbors (with replacement)
+
+
+# Prompt distance uses s_p = SD( X_ip - X_i'p ) across all pairs
+# For any variable, SD(diff) = sqrt(2)*sd(x)
+scaled_X_for_covmatch <- function(X){
+  s <- apply(X, 2, sd)
+  s_diff <- sqrt(2) * s
+  s_diff[s_diff == 0] <- 1
+  Xs <- sweep(X, 2, s_diff, "/")
+  list(Xs = Xs, s_diff = s_diff)
+}
+
+dist2_between <- function(A, B){
+  aa <- rowSums(A^2)
+  bb <- rowSums(B^2)
+  outer(aa, bb, "+") - 2 * (A %*% t(B))
+}
+
+topM_cols <- function(D, M){
+  t(apply(D, 1, function(row) order(row, decreasing=FALSE)[1:M]))
+}
+
+max_reuse <- function(match_mat, pool_indices){
+  tab <- table(factor(as.vector(match_mat), levels = pool_indices))
+  max(as.integer(tab))
+}
+
+
+# Build matches 
+make_matches_covariate <- function(Z, X, M){
+  sc <- scaled_X_for_covmatch(X)
+  Xs <- sc$Xs
+
+  tr_idx <- which(Z==1)
+  co_idx <- which(Z==0)
+
+  Xt <- Xs[tr_idx, , drop=FALSE]
+  Xc <- Xs[co_idx, , drop=FALSE]
+
+  D2_tc <- dist2_between(Xt, Xc)             
+  nn_ctrl_cols <- topM_cols(D2_tc, M)
+  match_ctrl_for_treat <- matrix(co_idx[nn_ctrl_cols], nrow=nrow(nn_ctrl_cols))
+
+  D2_ct <- t(D2_tc)                          
+  nn_tr_cols <- topM_cols(D2_ct, M)
+  match_treat_for_ctrl <- matrix(tr_idx[nn_tr_cols], nrow=nrow(nn_tr_cols))
+
+  list(tr_idx=tr_idx, co_idx=co_idx,
+       M=M,
+       match_ctrl_for_treat=match_ctrl_for_treat,
+       match_treat_for_ctrl=match_treat_for_ctrl)
+}
+
+make_matches_ps <- function(Z, X, M){
+  # PS model: logistic on X (full rank)
+  keep <- qr(X)$pivot[seq_len(qr(X)$rank)]
+  Xr <- X[, keep, drop=FALSE]
+  fit <- glm.fit(x=Xr, y=Z, family=binomial())
+  ehat <- as.numeric(plogis(Xr %*% fit$coefficients))
+
+  tr_idx <- which(Z==1)
+  co_idx <- which(Z==0)
+
+  et <- ehat[tr_idx]; ec <- ehat[co_idx]
+  D_tc <- abs(outer(et, ec, "-"))            
+  nn_ctrl_cols <- topM_cols(D_tc, M)
+  match_ctrl_for_treat <- matrix(co_idx[nn_ctrl_cols], nrow=nrow(nn_ctrl_cols))
+
+  D_ct <- t(D_tc)                             
+  nn_tr_cols <- topM_cols(D_ct, M)
+  match_treat_for_ctrl <- matrix(tr_idx[nn_tr_cols], nrow=nrow(nn_tr_cols))
+
+  list(tr_idx=tr_idx, co_idx=co_idx,
+M=M, ehat=ehat,
+
+match_ctrl_for_treat=match_ctrl_for_treat,
+match_treat_for_ctrl=match_treat_for_ctrl)
+}
+
+
+# Bias-corrected imputation + ATE
+
+# Need mu0_hat(Xi) = E[Y|X,Z=0] and mu1_hat(Xi) = E[Y|X,Z=1]
+# Using linear regression 
+fit_mu_models <- function(dat, Xvars){
+  f <- as.formula(paste0("Y ~ ", paste(Xvars, collapse=" + ")))
+  fit0 <- lm(f, data=dat[dat$Z==0, , drop=FALSE])
+  fit1 <- lm(f, data=dat[dat$Z==1, , drop=FALSE])
+  list(fit0=fit0, fit1=fit1)
+}
+
+predict_mu <- function(fit0, fit1, dat){
+  mu0 <- as.numeric(predict(fit0, newdata=dat))
+  mu1 <- as.numeric(predict(fit1, newdata=dat))
+  list(mu0=mu0, mu1=mu1)
+}
+
+# Compute bias-corrected ATE per prompt:
+# For treated i:  Y~(0) = avg_j [Yj + mu0(Xi) - mu0(Xj)], Y~(1)=Yi
+# For control i:  Y~(1) = avg_j [Yj + mu1(Xi) - mu1(Xj)], Y~(0)=Yi
+ate_bias_corrected <- function(Y, Z, matches, mu0, mu1){
+  tr_idx <- matches$tr_idx
+  co_idx <- matches$co_idx
+  M <- matches$M
+
+  mC <- matches$match_ctrl_for_treat  
+  mT <- matches$match_treat_for_ctrl 
+
+  # Treated units:
+  # Ytilde1 = Yi
+  # Ytilde0 = avg_j [Yj + mu0_i - mu0_j]
+  mu0_i <- mu0[tr_idx]
+  mu0_j <- matrix(mu0[mC], nrow=length(tr_idx), ncol=M)
+  Y_j0  <- matrix(Y[mC],  nrow=length(tr_idx), ncol=M)
+  Ytilde0_tr <- rowMeans(Y_j0 + mu0_i - mu0_j)
+  Ytilde1_tr <- Y[tr_idx]
+
+  # Control units:
+  # Ytilde0 = Yi
+  # Ytilde1 = avg_j [Yj + mu1_i - mu1_j]
+  mu1_i <- mu1[co_idx]
+  mu1_j <- matrix(mu1[mT], nrow=length(co_idx), ncol=M)
+  Y_j1  <- matrix(Y[mT],  nrow=length(co_idx), ncol=M)
+  Ytilde1_co <- rowMeans(Y_j1 + mu1_i - mu1_j)
+  Ytilde0_co <- Y[co_idx]
+
+  # combined
+  Ytilde1 <- numeric(length(Y))
+  Ytilde0 <- numeric(length(Y))
+  Ytilde1[tr_idx] <- Ytilde1_tr
+  Ytilde0[tr_idx] <- Ytilde0_tr
+  Ytilde1[co_idx] <- Ytilde1_co
+  Ytilde0[co_idx] <- Ytilde0_co
+
+  mean(Ytilde1 - Ytilde0)
+}
+
+```
+
+
+**Bias-Corrected Matching estimator**
+
+We fit $\hat{\mu}_0(X) = E[Y|X,Z = 0]$ and $\hat{\mu}_1(X) = E[Y|X,Z = 1]$ using linear regression. Y is binary
+
+
+
+
+
+To compute bias-corrected imputed potential outcome and $\hat{\tau}_M^{bcm}$. Given matches $M_i$ from the opposite group then;
+
+ _ If $Z_i = 1:$
+ 
+ $$\hat{Y}_i(1) = Y_i,  \hat{Y}_i(0) = \frac{1}{M} \sum_{j \in M} [Y_j + \hat{\mu}_0(X_i) - \hat{\mu}_0(X_j)]$$
+ 
+ 
+ 
+ _ If $Z_i = 0:$
+ 
+ $$\hat{Y}_i(0) = Y_i,  \hat{Y}_i(1) = \frac{1}{M} \sum_{j \in M} [Y_j + \hat{\mu}_1(X_i) - \hat{\mu}_1(X_j)]$$
+ 
+ 
+then:
+
+$$\hat{\tau}_M^{bcm} = \frac{1}{N} \sum_{i=1}^N (\hat{Y}_i(1) - \hat{Y}_i(0))$$
+## Part 3 Q3b
+
+**Bias-corrected as compared to Q2a**
+
+```{r}
+
+# Bias-corrected matching using covariate matches
+
+mu_fits <- fit_mu_models(dat, Xvars)
+mu_hat  <- predict_mu(mu_fits$fit0, mu_fits$fit1, dat)
+mu0 <- mu_hat$mu0
+mu1 <- mu_hat$mu1
+
+res_3a <- lapply(Ms, function(M){
+  matches <- make_matches_covariate(Z, Xmm, M)
+  tau_bcm <- ate_bias_corrected(Y, Z, matches, mu0, mu1)
+
+  maxR <- max(
+max_reuse(matches$match_ctrl_for_treat, matches$co_idx),
+
+max_reuse(matches$match_treat_for_ctrl, matches$tr_idx)
+  )
+
+  data.frame(method="Own BCM: covariate match", M=M, tau_bcm=tau_bcm, max_reuse=maxR)
+}) |> bind_rows()
+
+knitr::kable(res_3a, digits=4,
+             
+caption="Bias-corrected matching using covariate matching (own implementation)")
+```
+
+
+Part 2 Q3b
+
+**Bias-correct as compared to Q2b**
+
+```{r}
+
+# Bias-corrected matching using PS matches
+
+res_3b <- lapply(Ms, function(M){
+  matches <- make_matches_ps(Z, Xmm, M)
+  tau_bcm <- ate_bias_corrected(Y, Z, matches, mu0, mu1)
+
+  maxR <- max(
+max_reuse(matches$match_ctrl_for_treat, matches$co_idx),
+
+max_reuse(matches$match_treat_for_ctrl, matches$tr_idx)
+  )
+
+data.frame(method="Own BCM: PS match",
+M=M, tau_bcm=tau_bcm, max_reuse=maxR)
+}) |> bind_rows()
+
+knitr::kable(res_3b, digits=4,
+
+caption="Bias-corrected matching using propensity score matching (own implementation)")
+
+```
+
+
+
+
+## Part 2 Q3c
+
+For M = 4: average absolute bias correction term, we want to compute 
+
+$$\frac{1}{N} \sum_{Z_i = 1} | \hat{\mu}_0(X_i) - \frac{1}{M} \sum_{j \in M_i} \hat{\mu}_0(X_j)|$$
+
+For both covariate and PS matching;
+
+```{r}
+
+# average absolute bias correction term for treated units, M=4:
+# (1/N1) sum_{Zi=1} | mu0(Xi) - (1/M) sum_{j in Mi} mu0(Xj) |
+avg_abs_bias_term_treated <- function(Z, matches, mu0){
+  tr_idx <- matches$tr_idx
+  M <- matches$M
+  mC <- matches$match_ctrl_for_treat
+
+  mu0_i <- mu0[tr_idx]
+  mu0_bar_j <- rowMeans(matrix(mu0[mC], nrow=length(tr_idx), ncol=M))
+  mean(abs(mu0_i - mu0_bar_j))
+}
+
+
+# For M=4: average absolute bias correction term (treated)
+
+matches_cov_M4 <- make_matches_covariate(Z, Xmm, M=4)
+matches_ps_M4  <- make_matches_ps(Z, Xmm, M=4)
+
+bias_cov <- avg_abs_bias_term_treated(Z, matches_cov_M4, mu0)
+bias_ps  <- avg_abs_bias_term_treated(Z, matches_ps_M4,  mu0)
+
+res_3c <- data.frame(
+  method = c("Covariate matching","Propensity score matching"),
+  M = 4,
+  avg_abs_bias_term = c(bias_cov, bias_ps)
+)
+
+knitr::kable(res_3c, digits=4,
+
+caption="Average absolute bias correction term for treated units (M=4)")
+
+# Plot for
+ggplot(res_3c, aes(x=method, y=avg_abs_bias_term)) +
+geom_col() +
+labs(x=NULL, y="Average absolute bias correction term",
+title="M=4: Bias correction magnitude (treated units)") +
+theme_bw() +
+theme(axis.text.x = element_text(angle=30, hjust=1))
 ```
 
 **Comment**
 
+Smaller average absolute term implies matched controls have $\hat{\mu}_0(X)$ closer to treated units. That means better match quality (in terms of the outcome model for contorls), hence smaller bias correction needed. The covariate matching produces smaller bias correction based on the plot.
 
 
 
+## 3d
 
+```{r}
+
+# Verify using Matching package with BiasAdjust=TRUE
+# PS scores once for package runs
+keep <- qr(Xmm)$pivot[seq_len(qr(Xmm)$rank)]
+Xr <- Xmm[, keep, drop=FALSE]
+fit_ps <- glm.fit(x=Xr, y=Z, family=binomial())
+ehat <- as.numeric(plogis(Xr %*% fit_ps$coefficients))
+
+match_pkg_biasadj <- function(Y, Z, X, M){
+  mout <- Match(Y=Y, Tr=Z, X=X, M=M, replace=TRUE, estimand="ATE", BiasAdjust=TRUE)
+  data.frame(M=M, est=as.numeric(mout$est), se=as.numeric(mout$se))
+}
+
+res_pkg_cov_ba <- lapply(Ms, function(M) match_pkg_biasadj(Y, Z, Xmm, M)) |> bind_rows()
+res_pkg_cov_ba$method <- "Matching pkg (BiasAdjust=TRUE): covariate"
+
+res_pkg_ps_ba <- lapply(Ms, function(M) match_pkg_biasadj(Y, Z, matrix(ehat, ncol=1), M)) |> bind_rows()
+res_pkg_ps_ba$method <- "Matching pkg (BiasAdjust=TRUE): PS"
+
+res_3d <- bind_rows(res_pkg_cov_ba, res_pkg_ps_ba) |>
+  dplyr::select(method, M, est, se)
+
+knitr::kable(res_3d, digits=4,
+  
+caption=" Matching package verification with BiasAdjust=TRUE (estimate and SE)")
+
+```
+
+
+```{r}
+
+# Comparison own BCM vs package BiasAdjust
+
+own_all <- bind_rows(res_3a, res_3b) |>
+  transmute(method, M, est=tau_bcm)
+
+pkg_all <- res_3d |>
+  transmute(method, M, est=est, se=se)
+
+cmp <- bind_rows(own_all, pkg_all) |>
+  arrange(M, method)
+
+knitr::kable(cmp, digits=4,
+
+caption="Comparison: Own bias-corrected estimates vs Matching::Match(BiasAdjust=TRUE)")
+
+# Plot: estimates vs M for each method family
+plot_df <- cmp |>
+  mutate(method = factor(method, levels=unique(method)))
+
+ggplot(plot_df, aes(x=factor(M), y=est, group=method)) +
+  geom_line() +
+  geom_point(size=2) +
+  labs(x="M (neighbors)", y="Estimated ATE",
+title="Bias-corrected matching estimates across M") +
+theme_bw() +
+theme(legend.position="bottom")
+
+
+
+```
+
+
+**Comments**
+
+The differences is because;The estimated means are fit once using linear regression on all covariates(full X, with factors). Matching implements the Abadie-Imbens bias correction tied to the covariates supplied in X and its internal procedure. PS matching + Bias_Adjust in matching: If we pass only X = e_hat, its bias adjustment can only use PS not  the full covariates set - so it can differ from the full covariate regression correction. Specifically;
+
+3(c): smaller avg abs bias term => matches are closer in terms of mu0(X), implying higher match quality
+3(d): differences between your BCM and Matching::Match(BiasAdjust=TRUE) can come from
+  1. tie-breaking / neighbor ordering, 2. how regression adjustment is implemented internally, 3. different handling of rank-deficiency or covariate scaling.
+
+
+## Part 2 Q4
+
+```{r}
+
+# treatment and outcome
+df$Z <- ifelse(df$pg == 1, 1, 0)   
+df$Y <- df$i_aqoc
+
+# factors
+fac_vars <- c("i_sex","i_race","i_educ","i_insu","i_drug","i_seve")
+df[fac_vars] <- lapply(df[fac_vars], factor)
+
+
+df$i_educ <- as.character(df$i_educ); df$i_educ[df$i_educ=="1"] <- "2"; df$i_educ <- factor(df$i_educ)
+df$i_insu <- as.character(df$i_insu); df$i_insu[df$i_insu=="3"] <- "2"; df$i_insu <- factor(df$i_insu)
+
+# numeric covariate matrix
+X_cat <- model.matrix(~ 0 + i_sex + i_race + i_educ + i_insu + i_drug + i_seve, data=df)
+X <- cbind(i_age=df$i_age, com_t=df$com_t, pcs_sd=df$pcs_sd, mcs_sd=df$mcs_sd, X_cat)
+
+# robust s_p for standardized Euclidean distance 
+sp <- sqrt(2 * apply(X, 2, var, na.rm=TRUE))
+sp[!is.finite(sp) | sp <= 0] <- 1
+
+X_scaled <- sweep(X, 2, sp, "/")
+
+# propensity score for PS matching
+ps_mod <- glm(
+  Z ~ i_age + i_sex + i_race + i_educ + i_insu + i_drug + i_seve + com_t + pcs_sd + mcs_sd,
+  data=df, family=binomial()
+)
+df$e_hat <- predict(ps_mod, type="response")
+eps <- 1e-6
+df$e_hat <- pmin(pmax(df$e_hat, eps), 1-eps)
+
+```
+
+
+
+## Part 2 Q4a
+
+**Summary Table**
+
+```{r}
+run_match <- function(Y, Z, Xmatch, M, bias_adj) {
+  m <- Match(
+    Y = Y, Tr = Z, X = Xmatch,
+    M = M, replace = TRUE,
+    estimand = "ATE",
+    BiasAdjust = bias_adj
+  )
+  tibble(est = m$est, se = m$se.standard)
+}
+
+Ms <- c(1,4,8)
+
+res_pkg <- expand_grid(
+  match_type = c("Covariate", "PropensityScore"),
+  estimator  = c("Simple", "Bias-corrected"),
+  M = Ms
+) %>%
+  rowwise() %>%
+  mutate(
+    out = list({
+      Xuse <- if (match_type=="Covariate") X_scaled else df$e_hat
+      run_match(df$Y, df$Z, Xuse, M, bias_adj = (estimator=="Bias-corrected"))
+    })
+  ) %>%
+  ungroup() %>%
+  unnest(out) %>%
+  mutate(across(c(est,se), ~as.numeric(.)))
+
+res_pkg
+
+
+tab_summary <- res_pkg %>%
+  mutate(method = paste(match_type, estimator, sep=" | ")) %>%
+  dplyr::select(method, M, est, se) %>%
+  arrange(method, M)
+
+tab_summary
+
+```
+
+
+```{r}
+
+
+run_match <- function(Y, Z, Xmatch, M, bias_adj) {
+  m <- Match(Y=Y, Tr=Z, X=Xmatch, M=M, replace=TRUE,
+             estimand="ATE", BiasAdjust=bias_adj)
+  tibble(est=m$est, se=m$se.standard)
+}
+
+M_grid <- c(1,2,4,6,8,10,12,15,20)
+
+grid_res <- tidyr::expand_grid(
+  match_type = c("Covariate","PropensityScore"),
+  estimator  = c("Simple","Bias-corrected"),
+  M = M_grid
+) %>%
+  rowwise() %>%
+  mutate(out = list({
+    Xuse <- if (match_type=="Covariate") X_scaled else df$e_hat
+    run_match(df$Y, df$Z, Xuse, M, bias_adj = (estimator=="Bias-corrected"))
+  })) %>%
+  ungroup() %>%
+  tidyr::unnest(out) %>%
+  arrange(match_type, estimator, M)
+
+# Stability diagnostic: range over M-grid
+stab <- grid_res %>%
+  group_by(match_type, estimator) %>%
+  summarise(est_range = max(est) - min(est),
+            est_sd = sd(est),
+            mean_se = mean(se),
+            .groups="drop") %>%
+  arrange(est_range)
+
+stab
+grid_res
+
+
+best_method <- stab %>% slice(1) %>% dplyr::select(match_type, estimator)
+
+final_choice <- grid_res %>%
+  semi_join(best_method, by=c("match_type","estimator")) %>%
+  arrange(se, M) %>%
+  slice(1)
+
+final_choice
+
+```
+
+
+## Part 2 Q4b
+
+
+
+```{r}
+ggplot(res_pkg, aes(x=M, y=est, group=interaction(match_type, estimator),
+                    color=match_type, linetype=estimator)) +
+  geom_point() +
+  geom_line() +
+  theme_bw() +
+  labs(x="Number of matches (M)", y="ATE estimate",
+       title="ATE vs M for simple and bias-corrected matching",
+       color="Matching type", linetype="Estimator")
+
+
+stability <- res_pkg %>%
+  group_by(match_type, estimator) %>%
+  summarise(
+    est_range = max(est) - min(est),
+    est_sd    = sd(est),
+    mean_se   = mean(se),
+    .groups="drop"
+  )
+stability
+
+```
+
+
+
+## Part 2 Q4c
+
+I think the propensity score with biased corrected matching at M = 4. At this M value, the ATE estimate neither takes too many or too few matching, it makes the estimates between the other also. Based on the plot, choosing the BCM PS means that the value of M here does not affect the overall estimate in a major way as thee estimate relatively.
+
+## Part 2 Q4d
+
+```{r}
+M_grid <- c(1,2,4,6,8,10,12,15,20)
+
+grid_res <- expand_grid(
+  match_type = c("Covariate", "PropensityScore"),
+  estimator  = c("Simple", "Bias-corrected"),
+  M = M_grid
+) %>%
+  rowwise() %>%
+  mutate(
+    out = list({
+      Xuse <- if (match_type=="Covariate") X_scaled else df$e_hat
+      run_match(df$Y, df$Z, Xuse, M, bias_adj = (estimator=="Bias-corrected"))
+    })
+  ) %>%
+  ungroup() %>%
+  unnest(out)
+
+grid_res
+
+ggplot(grid_res, aes(x=M, y=est, group=interaction(match_type, estimator),
+                     color=match_type, linetype=estimator)) +
+  geom_point() + geom_line() +
+  theme_bw() +
+  labs(x="M", y="ATE", title="ATE vs M (extended grid)")
+
+```
+
+
+```{r}
+grid_pick <- grid_res %>%
+  group_by(match_type, estimator) %>%
+  arrange(M) %>%
+  mutate(delta = abs(est - lag(est))) %>%
+  summarise(
+    M_star = M[which.min(se)],   # or choose based on smallest SE
+    est_star = est[which.min(se)],
+    se_star  = min(se),
+    .groups="drop"
+  )
+
+grid_pick
+
+```
+
+**Additional Evidence**
+
+```{r}
+logit <- function(p) log(p/(1-p))
+sd_logit_ps <- sd(logit(df$e_hat))
+
+cal_grid <- c(0.1, 0.2, 0.3) * sd_logit_ps  # common choices
+
+run_ps_caliper <- function(M, cal) {
+  m <- Match(
+    Y=df$Y, Tr=df$Z, X=df$e_hat,
+    M=M, replace=TRUE, estimand="ATE",
+    BiasAdjust=TRUE,
+    caliper=cal
+  )
+  tibble(M=M, caliper=cal, est=m$est, se=m$se.standard)
+}
+
+ps_cal_res <- bind_rows(lapply(M_grid, function(M)
+  bind_rows(lapply(cal_grid, function(cal) {
+    out <- tryCatch(run_ps_caliper(M, cal), error=function(e) NULL)
+    out
+  }))
+))
+
+ps_cal_res
+
+```

@@ -1,0 +1,1935 @@
+---
+title: "Homework 3"
+author: "Gifty Osei"
+date: "`r Sys.Date()`"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+header-includes:
+  - \usepackage{pdfpages}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, tidy = TRUE,dev = "cairo_pdf")
+
+library(latex2exp)
+library(dplyr)
+library(knitr)
+#library(kableExtra)
+library(ggplot2)
+library(forcats)
+library(tidyr)
+library(cobalt)
+library(tibble)
+library(Matching)
+#library(pander)
+library(broom)
+library(broom.mixed)
+```
+
+
+## Acknowledgement / Disclosure Statement
+
+I discussed this homework with Jacob Antici at some point specifically on some suggested library warnings, however my work is completely independent. I also used Chat-GPT to fine tune my writings and occasionally in helping to understand with errors and fixing bugs in my code.
+
+## Part 1
+
+```{r,include=FALSE}
+
+# Part 1: Double Machine Learning for ATE
+
+library(MASS)
+
+# Build covariance matrix
+
+make_sigma <- function(p = 5, rho = 0.7) {
+  Sigma <- matrix(0, nrow = p, ncol = p)
+  for (j in 1:p) {
+    for (k in 1:p) {
+      if (j == k) {
+        Sigma[j, k] <- 1
+      } else {
+        Sigma[j, k] <- rho^abs(j - k)
+      }
+    }
+  }
+  Sigma
+}
+
+
+# True nuisance functions
+
+propensity_fun <- function(X) {
+  # X is an n x 5 matrix or data frame
+  linpred <- X[, 1] + 0.5 * X[, 2]
+  exp(linpred) / (1 + exp(linpred))
+}
+
+m0_fun <- function(X) {
+  X[, 1] + X[, 2]
+}
+
+m1_fun <- function(X) {
+  X[, 1] + X[, 2] + X[, 1] * X[, 3] + 1
+}
+
+# -----------------------------
+# True ATE
+
+true_ate <- function() {
+  # E[X1] = E[X2] = 0
+  # E[X1 X3] = Cov(X1, X3) = 0.7^2 = 0.49
+  1 + 0.7^2
+}
+
+
+#  Simulate the dataset
+
+simulate_dml_data <- function(n, seed = 123) {
+  set.seed(seed)
+  
+  p <- 5
+  Sigma <- make_sigma(p = p, rho = 0.7)
+  
+  # Generate X ~ N(0, Sigma)
+  X <- MASS::mvrnorm(n = n, mu = rep(0, p), Sigma = Sigma)
+  colnames(X) <- paste0("X", 1:p)
+  
+  # Propensity score
+  e <- propensity_fun(X)
+  
+  # Treatment assignment
+  Z <- rbinom(n = n, size = 1, prob = e)
+  
+  # Potential outcome regressions
+  m0 <- m0_fun(X)
+  m1 <- m1_fun(X)
+  
+  # Noise
+  eps <- rnorm(n, mean = 0, sd = 1)
+  
+  # Observed outcome
+  Y <- Z * m1 + (1 - Z) * m0 + eps
+  
+  # Potential outcomes (optional, useful for checking)
+  Y0 <- m0 + eps
+  Y1 <- m1 + eps
+  
+  data.frame(
+    Y = Y,
+    Z = Z,
+    X1 = X[, 1],
+    X2 = X[, 2],
+    X3 = X[, 3],
+    X4 = X[, 4],
+    X5 = X[, 5],
+    e_true = e,
+    m0_true = m0,
+    m1_true = m1,
+    Y0 = Y0,
+    Y1 = Y1
+  )
+}
+
+# test
+
+tau0 <- true_ate()
+tau0
+
+
+dat <- simulate_dml_data(n = 1000, seed = 101)
+
+head(dat)
+mean(dat$Z)             # observed treatment rate
+mean(dat$Y)
+mean(dat$Y1 - dat$Y0)   # samplethe treatment effect
+```
+
+```{r, include=FALSE}
+# True ATE
+true_ate()
+
+# Large sample check
+dat_big <- simulate_dml_data(n = 100000, seed = 999)
+
+mean(dat_big$Y1 - dat_big$Y0)
+
+round(cor(dat_big[, c("X1","X2","X3","X4","X5")]), 2)
+```
+
+
+
+```{r, include=FALSE}
+#*Data Simplified*
+
+n <- 1000
+p <- 5
+
+Sigma <- outer(1:p, 1:p, function(j, k) 0.7^abs(j - k))
+diag(Sigma) <- 1
+
+X <- MASS::mvrnorm(n, mu = rep(0, p), Sigma = Sigma)
+
+e  <- plogis(X[,1] + 0.5 * X[,2])
+Z  <- rbinom(n, 1, e)
+m0 <- X[,1] + X[,2]
+m1 <- X[,1] + X[,2] + X[,1] * X[,3] + 1
+Y  <- Z * m1 + (1 - Z) * m0 + rnorm(n)
+
+dat <- data.frame(Y, Z, X1 = X[,1], X2 = X[,2], X3 = X[,3], X4 = X[,4], X5 = X[,5])
+```
+
+
+
+**Q1**
+
+Now we simulate data using the description given;
+
+```{r}
+
+# Q1 Naive Machine Learning Estimator
+
+library(ranger)
+library(ggplot2)
+library(dplyr)
+
+
+# Covariance matrix
+
+make_sigma <- function(p = 5, rho = 0.7) {
+  Sigma <- outer(1:p, 1:p, function(j, k) rho^abs(j - k))
+  diag(Sigma) <- 1
+  Sigma
+}
+
+
+# True nuisance functions
+
+propensity_fun <- function(X) {
+  plogis(X[, 1] + 0.5 * X[, 2])
+}
+
+m0_fun <- function(X) {
+  X[, 1] + X[, 2]
+}
+
+m1_fun <- function(X) {
+  X[, 1] + X[, 2] + X[, 1] * X[, 3] + 1
+}
+
+true_tau <- 1.49
+true_mu0 <- 0
+true_mu1 <- 1.49
+
+
+# Simulate dataset
+
+simulate_data <- function(n = 500, seed = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+
+  p <- 5
+  Sigma <- make_sigma(p = p, rho = 0.7)
+
+  X <- MASS::mvrnorm(n = n, mu = rep(0, p), Sigma = Sigma)
+  colnames(X) <- paste0("X", 1:5)
+
+  e <- propensity_fun(X)
+  Z <- rbinom(n, size = 1, prob = e)
+
+  m0 <- m0_fun(X)
+  m1 <- m1_fun(X)
+
+  eps <- rnorm(n, mean = 0, sd = 1)
+  Y <- Z * m1 + (1 - Z) * m0 + eps
+
+  data.frame(
+    Y = Y,
+    Z = Z,
+    X1 = X[, 1],
+    X2 = X[, 2],
+    X3 = X[, 3],
+    X4 = X[, 4],
+    X5 = X[, 5],
+    m0_true = m0,
+    m1_true = m1,
+    e_true = e
+  )
+}
+```
+
+
+```{r}
+library(ranger)
+
+# replication
+
+one_rep_naive <- function(n = 500, seed = NULL,
+                          num.trees = 500,
+                          min.node.size = 5) {
+
+  dat <- simulate_data(n = n, seed = seed)
+
+  # Random split into equal halves
+  idx <- sample(seq_len(n))
+  I1 <- idx[1:(n / 2)]
+  I2 <- idx[(n / 2 + 1):n]
+
+  train <- dat[I1, ]
+  est   <- dat[I2, ]
+
+  xvars <- paste0("X", 1:5)
+  form <- as.formula(paste("Y ~", paste(xvars, collapse = " + ")))
+
+  # Separate treated/control training sets
+  train1 <- train[train$Z == 1, ]
+  train0 <- train[train$Z == 0, ]
+  if (nrow(train1) < 10 || nrow(train0) < 10) {
+    return(NULL)
+  }
+
+  # Fit outcome models on traingin set
+  fit1 <- ranger(
+    formula = form,
+    data = train1,
+    num.trees = num.trees,
+    min.node.size = min.node.size,
+    seed = seed
+  )
+
+  fit0 <- ranger(
+    formula = form,
+    data = train0,
+    num.trees = num.trees,
+    min.node.size = min.node.size,
+    seed = seed + 1
+  )
+
+  # Predict on test set
+  m1_hat_I2 <- predict(fit1, data = est)$predictions
+  m0_hat_I2 <- predict(fit0, data = est)$predictions
+
+  # Naive estimators
+  mu1_hat <- mean(m1_hat_I2)
+  mu0_hat <- mean(m0_hat_I2)
+  tau_hat <- mu1_hat - mu0_hat
+
+  # Empirical SE for tau_hat on I2 using plug-in variance
+  se_mu1 <- sd(m1_hat_I2) / sqrt(nrow(est))
+  se_mu0 <- sd(m0_hat_I2) / sqrt(nrow(est))
+  se_tau <- sqrt(se_mu1^2 + se_mu0^2)
+
+  # Quantities for decomposition of sqrt(n)(mu1_hat - mu1)
+  # Here P_n is over I2, with n2 = |I2|
+  n2 <- nrow(est)
+
+  a_star <- sqrt(n2) * (mean(est$m1_true) - true_mu1)
+  b_star <- sqrt(n2) * (mean(m1_hat_I2 - est$m1_true) - mean(m1_hat_I2 - est$m1_true))
+  #compute directly as empirical process:
+  b_star <- sqrt(n2) * ((mean(m1_hat_I2 - est$m1_true)) -
+                          mean(m1_hat_I2 - est$m1_true))
+
+  # The above is identically zero, because the second term is the same quantity.
+  # what we want:
+  # sqrt(n2) * ( P_n[g] - E[g | training] )
+  # We approximate E[g | training] by a large Monte Carlo sample from X
+  Sigma <- make_sigma(5, 0.7)
+  X_mc <- MASS::mvrnorm(n = 20000, mu = rep(0, 5), Sigma = Sigma)
+  colnames(X_mc) <- paste0("X", 1:5)
+  X_mc_df <- as.data.frame(X_mc)
+
+  m1_hat_mc <- predict(fit1, data = X_mc_df)$predictions
+  m1_true_mc <- m1_fun(as.matrix(X_mc))
+
+  Eg_hat_minus_m1 <- mean(m1_hat_mc - m1_true_mc)
+
+  b_star <- sqrt(n2) * (mean(m1_hat_I2 - est$m1_true) - Eg_hat_minus_m1)
+  c_star <- sqrt(n2) * Eg_hat_minus_m1
+
+  data.frame(
+    mu1_hat = mu1_hat,
+    mu0_hat = mu0_hat,
+    tau_hat = tau_hat,
+    se_tau = se_tau,
+    std_tau = (tau_hat - true_tau) / se_tau,
+    a_star = a_star,
+    b_star = b_star,
+    c_star = c_star
+  )
+}
+```
+
+
+
+```{r}
+
+# Run simulation
+
+set.seed(2026)
+
+## bootstrap
+B <- 1000
+results_list <- vector("list", B)
+
+for (b in 1:B) {
+  if (b %% 50 == 0) cat("Replication:", b, "\n")
+  results_list[[b]] <- one_rep_naive(n = 500, seed = 1000 + b)
+}
+
+results <- bind_rows(results_list)
+
+# remove any NULL/failed reps
+results <- results %>% filter(is.finite(std_tau), is.finite(se_tau), se_tau > 0)
+
+summary(results)
+```
+
+
+**1a**
+
+```{r}
+results %>%
+  summarise(
+    mean_mu1_hat = mean(mu1_hat),
+    mean_mu0_hat = mean(mu0_hat),
+    mean_tau_hat = mean(tau_hat),
+    bias_tau_hat = mean(tau_hat - true_tau),
+    sd_tau_hat = sd(tau_hat),
+    mean_se_tau = mean(se_tau)
+  )
+```
+
+
+**1b**
+
+```{r, fig.cap="This figure shows the histogram of the standardized estimates with an overlay of standard normal density."}
+
+ggplot(results, aes(x = std_tau)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 35, color = "black", fill = "grey80") +
+  stat_function(fun = dnorm, linewidth = 1) +
+  labs(
+    title = "Naive ML estimator: standardized tau-hat",
+    x = expression((hat(tau)[naive] - tau[0]) / se(hat(tau)[naive])),
+    y = "Density"
+  ) +
+  theme_bw(base_size = 14)
+```
+**Comment**
+
+We see from the figure that the normal density is shifted to the left of the histogram and not covering but centers at 0.
+
+
+```{r, fig.cap="This is the QQ-plot of the standardized naive estimator to check the normality assumption."}
+mean(results$std_tau)
+sd(results$std_tau)
+quantile(results$std_tau, probs = c(0.025, 0.5, 0.975))
+
+
+ggplot(results, aes(sample = std_tau)) +
+  stat_qq() +
+  stat_qq_line() +
+  labs(
+    title = "QQ plot of standardized naive estimator"
+  ) +
+  theme_bw(base_size = 14)
+```
+
+
+**1c**
+
+Now we chech the behavior of $a^*, b^*, c^*$ by summarizing the decomposition terms
+
+```{r}
+results %>%
+  summarise(
+    mean_a = mean(a_star),
+    sd_a = sd(a_star),
+    mean_b = mean(b_star),
+    sd_b = sd(b_star),
+    mean_c = mean(c_star),
+    sd_c = sd(c_star)
+  )
+```
+
+```{r}
+p1 <- ggplot(results, aes(x = a_star)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30, color = "black", fill = "grey80") +
+  stat_function(fun = dnorm, linewidth = 1) +
+  labs(title = expression(a^"*"), x = expression(a^"*"), y = "Density") +
+  theme_bw(base_size = 13)
+
+p2 <- ggplot(results, aes(x = b_star)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30, color = "black", fill = "grey80") +
+  labs(title = expression(b^"*"), x = expression(b^"*"), y = "Density") +
+  theme_bw(base_size = 13)
+
+p3 <- ggplot(results, aes(x = c_star)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30, color = "black", fill = "grey80") +
+  labs(title = expression(c^"*"), x = expression(c^"*"), y = "Density") +
+  theme_bw(base_size = 13)
+
+
+# p1
+# p2
+# p3
+
+library(patchwork)
+p1 + p2 + p3
+```
+
+**Comment**
+
+Based on the results, given that $a^* = \sqrt{n}P_n[m_1(X)-\mu_1]$. This is the average of i.i.d mean-zero terms so the CLT it is approximately normal. The histogram is roughly bell-shaped, centered near 0 and stable variation.
+
+- $b^* = \sqrt{n}(P_n - E)[\hat{m}_1(X)-m_1(X)]$. This is an empirical-process fluctuation term. If the prediction error $\hat{m}_1(X)- m_1(X)$ is sufficiently small in $L_2$, then this term is small and tend to zero. In finite samples, it may not be exactly negligible, but compared with the other terms it is often less problematic.
+
+- Given that $c^* = \sqrt{n}E[\hat{m}_1(X) - m_1(X)]$ is the regularization bias term and the most important. For the naive estimator, unless the ML learner estimates $m_1$ extremely accurately and with sufficiently small bias, this term do not vanish as seen in the results above.
+
+
+**2**
+
+
+**a**
+
+```{r, eval=FALSE, include=FALSE}
+
+# Orthogonal Score Without Sample Splitting
+
+
+
+# Covariance matrix
+
+make_sigma <- function(p = 5, rho = 0.7) {
+  Sigma <- outer(1:p, 1:p, function(j, k) rho^abs(j - k))
+  diag(Sigma) <- 1
+  Sigma
+}
+
+# True nuisance functions
+
+propensity_fun <- function(X) {
+  plogis(X[, 1] + 0.5 * X[, 2])
+}
+
+m0_fun <- function(X) {
+  X[, 1] + X[, 2]
+}
+
+m1_fun <- function(X) {
+  X[, 1] + X[, 2] + X[, 1] * X[, 3] + 1
+}
+
+true_tau <- 1.49
+true_mu0 <- 0
+true_mu1 <- 1.49
+
+
+# Simulate dataset again
+
+simulate_data <- function(n = 500, seed = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+
+  Sigma <- make_sigma(5, 0.7)
+  X <- MASS::mvrnorm(n = n, mu = rep(0, 5), Sigma = Sigma)
+  colnames(X) <- paste0("X", 1:5)
+
+  e <- propensity_fun(X)
+  Z <- rbinom(n, 1, e)
+
+  m0 <- m0_fun(X)
+  m1 <- m1_fun(X)
+
+  eps <- rnorm(n, mean = 0, sd = 1)
+  Y <- Z * m1 + (1 - Z) * m0 + eps
+
+  data.frame(
+    Y = Y,
+    Z = Z,
+    X1 = X[,1],
+    X2 = X[,2],
+    X3 = X[,3],
+    X4 = X[,4],
+    X5 = X[,5],
+    m0_true = m0,
+    m1_true = m1,
+    e_true = e
+  )
+}
+
+
+```
+
+```{r}
+one_rep_dr_manual <- function(n = 500, seed = NULL,
+                              num.trees = 500,
+                              min.node.size = 5,
+                              trim = 0.01) {
+  dat <- simulate_data(n = n, seed = seed)
+
+
+  # propensity score model: e(x) = P(Z=1 | X=x)
+  dat$Z_factor <- factor(dat$Z, levels = c(0, 1))
+
+  fit_e <- ranger(
+    Z_factor ~ X1 + X2 + X3 + X4 + X5,
+    data = dat,
+    probability = TRUE,
+    num.trees = num.trees,
+    min.node.size = min.node.size,
+    seed = seed
+  )
+
+  # m1(x): fit on treated units only
+  fit_m1 <- ranger(
+    Y ~ X1 + X2 + X3 + X4 + X5,
+    data = dat[dat$Z == 1, ],
+    num.trees = num.trees,
+    min.node.size = min.node.size,
+    seed = seed + 1
+  )
+
+  # m0(x): fit on control units only
+  fit_m0 <- ranger(
+    Y ~ X1 + X2 + X3 + X4 + X5,
+    data = dat[dat$Z == 0, ],
+    num.trees = num.trees,
+    min.node.size = min.node.size,
+    seed = seed + 2
+  )
+
+  e_hat  <- predict(fit_e,  data = dat)$predictions[, "1"]
+  m1_hat <- predict(fit_m1, data = dat)$predictions
+  m0_hat <- predict(fit_m0, data = dat)$predictions
+
+  # trim estimated propensity scores
+  e_hat <- pmin(pmax(e_hat, trim), 1 - trim)
+
+  # individual contributions for mu1_DR
+  dr1_i <- dat$Z * (dat$Y - m1_hat) / e_hat + m1_hat
+
+  # individual contributions for mu0_DR
+  dr0_i <- (1 - dat$Z) * (dat$Y - m0_hat) / (1 - e_hat) + m0_hat
+
+  # sample averages
+  mu1_hat_dr <- mean(dr1_i)
+  mu0_hat_dr <- mean(dr0_i)
+
+  # DR ATE estimator
+  tau_hat_dr <- mu1_hat_dr - mu0_hat_dr
+
+  # standard error based on estimated influence function
+  phi_i <- dr1_i - dr0_i - tau_hat_dr
+  se_tau <- sqrt(var(phi_i) / n)
+
+  data.frame(
+    mu1_hat_dr = mu1_hat_dr,
+    mu0_hat_dr = mu0_hat_dr,
+    tau_hat_dr = tau_hat_dr,
+    se_tau = se_tau,
+    std_tau = (tau_hat_dr - true_tau) / se_tau
+  )
+}
+
+
+set.seed(123)
+one_rep_dr_manual(n = 500, seed = 101)
+```
+
+```{r}
+one_rep_dr_manual_full <- function(n = 500, seed = NULL,
+                                   num.trees = 500,
+                                   min.node.size = 5,
+                                   trim = 0.01) {
+  dat <- simulate_data(n = n, seed = seed)
+
+  dat$Z_factor <- factor(dat$Z, levels = c(0, 1))
+
+  fit_e <- ranger(
+    Z_factor ~ X1 + X2 + X3 + X4 + X5,
+    data = dat,
+    probability = TRUE,
+    num.trees = num.trees,
+    min.node.size = min.node.size,
+    seed = seed
+  )
+
+  fit_m1 <- ranger(
+    Y ~ X1 + X2 + X3 + X4 + X5,
+    data = dat[dat$Z == 1, ],
+    num.trees = num.trees,
+    min.node.size = min.node.size,
+    seed = seed + 1
+  )
+
+  fit_m0 <- ranger(
+    Y ~ X1 + X2 + X3 + X4 + X5,
+    data = dat[dat$Z == 0, ],
+    num.trees = num.trees,
+    min.node.size = min.node.size,
+    seed = seed + 2
+  )
+
+  e_hat  <- predict(fit_e,  data = dat)$predictions[, "1"]
+  m1_hat <- predict(fit_m1, data = dat)$predictions
+  m0_hat <- predict(fit_m0, data = dat)$predictions
+
+  e_hat <- pmin(pmax(e_hat, trim), 1 - trim)
+
+  dr1_i <- dat$Z * (dat$Y - m1_hat) / e_hat + m1_hat
+  dr0_i <- (1 - dat$Z) * (dat$Y - m0_hat) / (1 - e_hat) + m0_hat
+
+  mu1_hat_dr <- mean(dr1_i)
+  mu0_hat_dr <- mean(dr0_i)
+  tau_hat_dr <- mu1_hat_dr - mu0_hat_dr
+
+  phi_i <- dr1_i - dr0_i - tau_hat_dr
+  se_tau <- sqrt(var(phi_i) / n)
+
+  list(
+    estimates = data.frame(
+      mu1_hat_dr = mu1_hat_dr,
+      mu0_hat_dr = mu0_hat_dr,
+      tau_hat_dr = tau_hat_dr,
+      se_tau = se_tau,
+      std_tau = (tau_hat_dr - true_tau) / se_tau
+    ),
+    dr1_i = dr1_i,
+    dr0_i = dr0_i,
+    e_hat = e_hat,
+    m1_hat = m1_hat,
+    m0_hat = m0_hat,
+    dat = dat
+  )
+}
+
+
+out <- one_rep_dr_manual_full(n = 500, seed = 101)
+
+out$estimates
+head(out$dr1_i)
+head(out$dr0_i)
+head(out$e_hat)
+head(out$m1_hat)
+head(out$m0_hat)
+```
+
+```{r}
+set.seed(2026)
+
+B <- 1000
+res_q2a <- bind_rows(lapply(1:B, function(b) {
+  one_rep_dr_manual(n = 500, seed = 2000 + b)
+}))
+
+summary(res_q2a)
+
+res_q2a %>%
+  summarise(
+    mean_mu1 = mean(mu1_hat_dr),
+    mean_mu0 = mean(mu0_hat_dr),
+    mean_tau = mean(tau_hat_dr),
+    bias_tau = mean(tau_hat_dr - true_tau),
+    sd_tau = sd(tau_hat_dr),
+    mean_se = mean(se_tau),
+    mean_std = mean(std_tau),
+    sd_std = sd(std_tau)
+  )
+
+ggplot(res_q2a, aes(x = std_tau)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 35, fill = "grey80", color = "black") +
+  stat_function(fun = dnorm, linewidth = 1) +
+  labs(
+    title = "Q2(a): DR estimator without sample splitting",
+    x = expression((hat(tau)[DR] - tau[0]) / se(hat(tau)[DR])),
+    y = "Density"
+  ) +
+  theme_bw(base_size = 14)
+```
+
+**b**
+
+```{r}
+
+# One replication for manual DR
+
+one_rep_dr_manual <- function(n = 500, seed = NULL,
+                              num.trees = 500,
+                              min.node.size = 5,
+                              trim = 0.01) {
+
+  dat <- simulate_data(n = n, seed = seed)
+
+  # propensity model on full sample
+  dat$Z_factor <- factor(dat$Z, levels = c(0, 1))
+
+  fit_e <- ranger(
+    Z_factor ~ X1 + X2 + X3 + X4 + X5,
+    data = dat,
+    num.trees = num.trees,
+    min.node.size = min.node.size,
+    probability = TRUE,
+    seed = seed
+  )
+
+  # outcome models on full sample
+  dat1 <- dat[dat$Z == 1, ]
+  dat0 <- dat[dat$Z == 0, ]
+
+  fit_m1 <- ranger(
+    Y ~ X1 + X2 + X3 + X4 + X5,
+    data = dat1,
+    num.trees = num.trees,
+    min.node.size = min.node.size,
+    seed = seed + 1
+  )
+
+  fit_m0 <- ranger(
+    Y ~ X1 + X2 + X3 + X4 + X5,
+    data = dat0,
+    num.trees = num.trees,
+    min.node.size = min.node.size,
+    seed = seed + 2
+  )
+
+  # predictions on full sample
+  e_hat  <- predict(fit_e,  data = dat)$predictions[, "1"]
+  m1_hat <- predict(fit_m1, data = dat)$predictions
+  m0_hat <- predict(fit_m0, data = dat)$predictions
+
+  # trim propensity scores
+  e_hat <- pmin(pmax(e_hat, trim), 1 - trim)
+
+  # DR scores for mu1 and mu0
+  psi1_i <- dat$Z * (dat$Y - m1_hat) / e_hat + m1_hat
+  psi0_i <- (1 - dat$Z) * (dat$Y - m0_hat) / (1 - e_hat) + m0_hat
+
+  mu1_hat <- mean(psi1_i)
+  mu0_hat <- mean(psi0_i)
+  tau_hat <- mu1_hat - mu0_hat
+
+  # influence-function-based SE
+  phi_i <- psi1_i - psi0_i - tau_hat
+  se_tau <- sqrt(var(phi_i) / n)
+
+  data.frame(
+    mu1_hat = mu1_hat,
+    mu0_hat = mu0_hat,
+    tau_hat = tau_hat,
+    se_tau = se_tau,
+    std_tau = (tau_hat - true_tau) / se_tau
+  )
+}
+```
+
+
+The orthogonal-score estimator is an averageof estimated pseudo-outcomes. So a natural asymptotic variance estimator is based on the empirical variance of
+
+$$\phi_i  = [\frac{Z_i(Y_i - \hat{m}_1(X_i))}{\hat{e}(X_i)} + \hat{m}_1(X_i) ] - [\frac{(1-Z_i)(Y_i - \hat{m}_0(X_i))}{1 - \hat{e}(X_i)} + \hat{m}_0(X_i)] - \hat{\tau}_{DR}$$
+Then $\hat{se} (\hat{\tau}_{DR}) = \sqrt{\frac{\widehat{Var}(\phi_i)}{n}}$
+
+```{r}
+
+# Monte Carlo for manual DR
+
+set.seed(2026)
+
+B <- 1000
+res_manual_list <- vector("list", B)
+
+for (b in 1:B) {
+  if (b %% 50 == 0) cat("Manual DR replication:", b, "\n")
+  res_manual_list[[b]] <- one_rep_dr_manual(n = 500, seed = 2000 + b)
+}
+
+res_manual <- bind_rows(res_manual_list) %>%
+  filter(is.finite(std_tau), is.finite(se_tau), se_tau > 0)
+
+summary(res_manual)
+```
+
+
+
+```{r}
+ggplot(res_manual, aes(x = std_tau)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 35, color = "black", fill = "grey80") +
+  stat_function(fun = dnorm, linewidth = 1) +
+  labs(
+    title = "Orthogonal score without sample splitting (manual)",
+    x = expression((hat(tau)[DR] - tau[0]) / se(hat(tau)[DR])),
+    y = "Density"
+  ) +
+  theme_bw(base_size = 14)
+```
+
+
+```{r}
+res_manual %>%
+  summarise(
+    mean_tau_hat = mean(tau_hat),
+    bias_tau_hat = mean(tau_hat - true_tau),
+    sd_tau_hat = sd(tau_hat),
+    mean_se_tau = mean(se_tau),
+    mean_std_tau = mean(std_tau),
+    sd_std_tau = sd(std_tau)
+  )
+```
+
+
+
+**Verifying with doubleML package**
+
+
+```{r}
+library(DoubleML)
+library(mlr3)
+library(mlr3learners)
+library(data.table)
+```
+
+
+```{r}
+
+# One replication for DoubleML verification
+
+one_rep_dr_doubleml <- function(n = 500, seed = NULL) {
+
+  dat <- simulate_data(n = n, seed = seed)
+
+  dml_data <- DoubleMLData$new(
+    data = data.table(dat[, c("Y", "Z", "X1", "X2", "X3", "X4", "X5")]),
+    y_col = "Y",
+    d_cols = "Z"
+  )
+
+  # learners
+  ml_g <- lrn("regr.ranger",
+              num.trees = 500,
+              min.node.size = 5)
+
+  ml_m <- lrn("classif.ranger",
+              num.trees = 500,
+              min.node.size = 5,
+              predict_type = "prob")
+
+  # ATE estimator
+  dml_plr <- DoubleMLIRM$new(
+    data = dml_data,
+    ml_g = ml_g,
+    ml_m = ml_m,
+    n_folds = 2,
+    n_rep = 1,
+    score = "ATE"
+  )
+
+  # disable cross-fitting / sample splitting as much as package allows
+  dml_plr$fit(store_predictions = TRUE)
+
+  tau_hat <- as.numeric(dml_plr$coef)
+  se_tau  <- as.numeric(dml_plr$se)
+
+  data.frame(
+    tau_hat = tau_hat,
+    se_tau = se_tau,
+    std_tau = (tau_hat - true_tau) / se_tau
+  )
+}
+```
+
+```{r}
+
+# Monte Carlo DoubleML
+
+set.seed(2027)
+
+B <- 1000
+res_dml_list <- vector("list", B)
+
+for (b in 1:B) {
+  if (b %% 50 == 0) cat("DoubleML replication:", b, "\n")
+  tmp <- try(one_rep_dr_doubleml(n = 500, seed = 3000 + b), silent = TRUE)
+  if (!inherits(tmp, "try-error")) {
+    res_dml_list[[b]] <- tmp
+  }
+}
+
+res_dml <- bind_rows(res_dml_list) %>%
+  filter(is.finite(std_tau), is.finite(se_tau), se_tau > 0)
+
+summary(res_dml)
+```
+
+
+**Both plots**
+
+```{r}
+p_manual <- ggplot(res_manual, aes(x = std_tau)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 35, color = "black", fill = "grey80") +
+  stat_function(fun = dnorm, linewidth = 1) +
+  labs(
+    title = "Manual orthogonal score",
+    x = expression((hat(tau)[DR] - tau[0]) / se(hat(tau)[DR])),
+    y = "Density"
+  ) +
+  theme_bw(base_size = 14)
+
+p_dml <- ggplot(res_dml, aes(x = std_tau)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 35, color = "black", fill = "grey80") +
+  stat_function(fun = dnorm, linewidth = 1) +
+  labs(
+    title = "DoubleML verification",
+    x = expression((hat(tau)[DR] - tau[0]) / se(hat(tau)[DR])),
+    y = "Density"
+  ) +
+  theme_bw(base_size = 14)
+
+
+## showing histogram side by side
+
+p_manual + p_dml
+
+```
+
+**Compare both approaches**
+
+```{r}
+manual_summary <- res_manual %>%
+  summarise(
+    mean_tau = mean(tau_hat),
+    bias_tau = mean(tau_hat - true_tau),
+    sd_tau = sd(tau_hat),
+    mean_se = mean(se_tau),
+    mean_std = mean(std_tau),
+    sd_std = sd(std_tau)
+  )
+
+dml_summary <- res_dml %>%
+  summarise(
+    mean_tau = mean(tau_hat),
+    bias_tau = mean(tau_hat - true_tau),
+    sd_tau = sd(tau_hat),
+    mean_se = mean(se_tau),
+    mean_std = mean(std_tau),
+    sd_std = sd(std_tau)
+  )
+
+manual_summary
+dml_summary
+```
+
+
+**Comment on the role of Neyman's orthogonality**
+
+The DR score is orthogonal because the moment condition is constructed so that small errors in estimating the nuisance functions have only second-order effect on the target parameter. meaning, the estimator is much less sensitive to nuisance estimation bias than the naive plug-in estimator. The standardized estimator looks closer to a normal than in Q1 and without splitting the orthogonality helps substantially.
+
+ - 1 naive estimator: no orthogonal correction, sensitive to regularization bias
+ 
+ - 2 Orthogonal score: include bias-correction terms, much more stable and closer to asymptotic normality with small bias estimations.
+
+
+
+**3**
+
+**a**
+
+```{r}
+
+# replication for manual DML with 2-fold cross-fitting
+
+one_rep_dml_cf <- function(n = 500, seed = NULL,
+                           num.trees = 500,
+                           min.node.size = 5,
+                           trim = 0.01) {
+
+  dat <- simulate_data(n = n, seed = seed)
+
+  # random 2-fold split
+  idx <- sample(seq_len(n))
+  fold_id <- rep(1:2, each = n / 2)
+  fold_id <- fold_id[order(order(idx))]  # random assignment to folds
+
+  # storage for out-of-fold predictions
+  e_hat  <- rep(NA_real_, n)
+  m1_hat <- rep(NA_real_, n)
+  m0_hat <- rep(NA_real_, n)
+
+  for (k in 1:2) {
+    test_idx  <- which(fold_id == k)
+    train_idx <- which(fold_id != k)
+
+    train_dat <- dat[train_idx, ]
+    test_dat  <- dat[test_idx, ]
+
+    train_dat$Z_factor <- factor(train_dat$Z, levels = c(0, 1))
+
+    # propensity model on training fold
+    fit_e <- ranger(
+      Z_factor ~ X1 + X2 + X3 + X4 + X5,
+      data = train_dat,
+      probability = TRUE,
+      num.trees = num.trees,
+      min.node.size = min.node.size,
+      seed = seed + k
+    )
+
+    # outcome models on training fold, separately by treatment status
+    train1 <- train_dat[train_dat$Z == 1, ]
+    train0 <- train_dat[train_dat$Z == 0, ]
+
+    # safety check
+    if (nrow(train1) < 10 || nrow(train0) < 10) {
+      return(NULL)
+    }
+
+    fit_m1 <- ranger(
+      Y ~ X1 + X2 + X3 + X4 + X5,
+      data = train1,
+      num.trees = num.trees,
+      min.node.size = min.node.size,
+      seed = seed + 100 + k
+    )
+
+    fit_m0 <- ranger(
+      Y ~ X1 + X2 + X3 + X4 + X5,
+      data = train0,
+      num.trees = num.trees,
+      min.node.size = min.node.size,
+      seed = seed + 200 + k
+    )
+
+    # out-of-fold predictions
+    e_hat[test_idx]  <- predict(fit_e,  data = test_dat)$predictions[, "1"]
+    m1_hat[test_idx] <- predict(fit_m1, data = test_dat)$predictions
+    m0_hat[test_idx] <- predict(fit_m0, data = test_dat)$predictions
+  }
+
+  # trim propensity scores
+  e_hat <- pmin(pmax(e_hat, trim), 1 - trim)
+
+  # orthogonal-score pseudo-outcomes
+  psi1_i <- dat$Z * (dat$Y - m1_hat) / e_hat + m1_hat
+  psi0_i <- (1 - dat$Z) * (dat$Y - m0_hat) / (1 - e_hat) + m0_hat
+
+  mu1_hat <- mean(psi1_i)
+  mu0_hat <- mean(psi0_i)
+  tau_hat <- mu1_hat - mu0_hat
+
+  # IF-based standard error
+  phi_i <- psi1_i - psi0_i - tau_hat
+  se_tau <- sqrt(var(phi_i) / n)
+
+  # bonus: CI for mu1
+  phi1_i <- psi1_i - mu1_hat
+  se_mu1 <- sqrt(var(phi1_i) / n)
+  ci_mu1_l <- mu1_hat - 1.96 * se_mu1
+  ci_mu1_u <- mu1_hat + 1.96 * se_mu1
+
+  data.frame(
+    mu1_hat = mu1_hat,
+    mu0_hat = mu0_hat,
+    tau_hat = tau_hat,
+    se_tau = se_tau,
+    std_tau = (tau_hat - true_tau) / se_tau,
+    se_mu1 = se_mu1,
+    ci_mu1_l = ci_mu1_l,
+    ci_mu1_u = ci_mu1_u
+  )
+}
+```
+
+```{r}
+
+# Monte Carlo for manual cross-fitted DML
+
+set.seed(2028)
+
+B <- 1000
+res_cf_list <- vector("list", B)
+
+for (b in 1:B) {
+  if (b %% 50 == 0) cat("Cross-fitted DML replication:", b, "\n")
+  res_cf_list[[b]] <- one_rep_dml_cf(n = 500, seed = 4000 + b)
+}
+
+res_cf <- bind_rows(res_cf_list) %>%
+  filter(is.finite(std_tau), is.finite(se_tau), se_tau > 0)
+
+summary(res_cf)
+```
+
+
+```{r}
+##histogram
+p_cf <- ggplot(res_cf, aes(x = std_tau)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 35, fill = "grey80", color = "black") +
+  stat_function(fun = dnorm, linewidth = 1) +
+  labs(
+    title = "Cross-fitted DML estimator (manual)",
+    x = expression((hat(tau)[DML] - tau[0]) / se(hat(tau)[DML])),
+    y = "Density"
+  ) +
+  theme_bw(base_size = 14)
+
+p_cf
+
+## summary
+res_cf %>%
+  summarise(
+    mean_tau = mean(tau_hat),
+    bias_tau = mean(tau_hat - true_tau),
+    sd_tau = sd(tau_hat),
+    mean_se = mean(se_tau),
+    mean_std = mean(std_tau),
+    sd_std = sd(std_tau)
+  )
+```
+
+
+**b**
+
+```{r}
+## verifying with Dml
+
+
+# replication DoubleML verification
+
+one_rep_dml_doubleml <- function(n = 500, seed = NULL) {
+
+  dat <- simulate_data(n = n, seed = seed)
+
+  dml_data <- DoubleMLData$new(
+    data = data.table(dat[, c("Y", "Z", "X1", "X2", "X3", "X4", "X5")]),
+    y_col = "Y",
+    d_cols = "Z"
+  )
+
+  # learners
+  ml_g <- lrn("regr.ranger",
+              num.trees = 500,
+              min.node.size = 5)
+
+  ml_m <- lrn("classif.ranger",
+              num.trees = 500,
+              min.node.size = 5,
+              predict_type = "prob")
+
+  dml_irm <- DoubleMLIRM$new(
+    data = dml_data,
+    ml_g = ml_g,
+    ml_m = ml_m,
+    n_folds = 2,
+    n_rep = 1,
+    score = "ATE"
+  )
+
+  dml_irm$fit()
+
+  tau_hat <- as.numeric(dml_irm$coef)
+  se_tau  <- as.numeric(dml_irm$se)
+  data.frame(
+    tau_hat = tau_hat,
+    se_tau = se_tau,
+    std_tau = (tau_hat - true_tau) / se_tau
+  )
+}
+```
+
+
+```{r}
+one_rep_dml_cf <- function(n = 500, seed = NULL,
+                           num.trees = 500,
+                           min.node.size = 5,
+                           trim = 0.01) {
+
+  dat <- simulate_data(n = n, seed = seed)
+
+  idx <- sample(seq_len(n))
+  folds <- rep(1:2, each = n / 2)
+  fold_id <- integer(n)
+  fold_id[idx] <- folds
+
+  e_hat  <- rep(NA_real_, n)
+  m1_hat <- rep(NA_real_, n)
+  m0_hat <- rep(NA_real_, n)
+
+  for (k in 1:2) {
+    test_idx  <- which(fold_id == k)
+    train_idx <- which(fold_id != k)
+
+    train_dat <- dat[train_idx, ]
+    test_dat  <- dat[test_idx, ]
+
+    train_dat$Z_factor <- factor(train_dat$Z, levels = c(0, 1))
+
+    fit_e <- ranger(
+      Z_factor ~ X1 + X2 + X3 + X4 + X5,
+      data = train_dat,
+      probability = TRUE,
+      num.trees = num.trees,
+      min.node.size = min.node.size,
+      seed = seed + k
+    )
+
+    fit_m1 <- ranger(
+      Y ~ X1 + X2 + X3 + X4 + X5,
+      data = train_dat[train_dat$Z == 1, ],
+      num.trees = num.trees,
+      min.node.size = min.node.size,
+      seed = seed + 100 + k
+    )
+
+    fit_m0 <- ranger(
+      Y ~ X1 + X2 + X3 + X4 + X5,
+      data = train_dat[train_dat$Z == 0, ],
+      num.trees = num.trees,
+      min.node.size = min.node.size,
+      seed = seed + 200 + k
+    )
+
+    e_hat[test_idx]  <- predict(fit_e, data = test_dat)$predictions[, "1"]
+    m1_hat[test_idx] <- predict(fit_m1, data = test_dat)$predictions
+    m0_hat[test_idx] <- predict(fit_m0, data = test_dat)$predictions
+  }
+
+  e_hat <- pmin(pmax(e_hat, trim), 1 - trim)
+
+  psi1_i <- dat$Z * (dat$Y - m1_hat) / e_hat + m1_hat
+  psi0_i <- (1 - dat$Z) * (dat$Y - m0_hat) / (1 - e_hat) + m0_hat
+
+  mu1_hat <- mean(psi1_i)
+  mu0_hat <- mean(psi0_i)
+  tau_hat <- mu1_hat - mu0_hat
+
+  phi_i <- psi1_i - psi0_i - tau_hat
+  se_tau <- sqrt(var(phi_i) / n)
+
+  phi1_i <- psi1_i - mu1_hat
+  se_mu1 <- sqrt(var(phi1_i) / n)
+
+  list(
+    summary = data.frame(
+      mu1_hat = mu1_hat,
+      mu0_hat = mu0_hat,
+      tau_hat = tau_hat,
+      se_tau = se_tau,
+      std_tau = (tau_hat - 1.49) / se_tau,
+      se_mu1 = se_mu1
+    ),
+    psi1_i = psi1_i,
+    psi0_i = psi0_i,
+    e_hat = e_hat,
+    m1_hat = m1_hat,
+    m0_hat = m0_hat,
+    dat = dat
+  )
+}
+
+out1 <- one_rep_dml_cf(n = 500, seed = 4001)
+names(out1)
+out1$psi1_i[1:10]
+out1$summary
+```
+
+
+
+```{r}
+
+# Monte Carlo for DoubleML verification
+
+set.seed(2029)
+
+B <- 1000
+res_dmlpkg_list <- vector("list", B)
+
+for (b in 1:B) {
+  if (b %% 50 == 0) cat("DoubleML package replication:", b, "\n")
+  tmp <- try(one_rep_dml_doubleml(n = 500, seed = 5000 + b), silent = TRUE)
+  if (!inherits(tmp, "try-error")) {
+    res_dmlpkg_list[[b]] <- tmp
+  }
+}
+
+res_dmlpkg <- bind_rows(res_dmlpkg_list) %>%
+  filter(is.finite(std_tau), is.finite(se_tau), se_tau > 0)
+
+summary(res_dmlpkg)
+```
+
+
+
+```{r}
+p_manual_cf <- ggplot(res_cf, aes(x = std_tau)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 35, fill = "grey80", color = "black") +
+  stat_function(fun = dnorm, linewidth = 1) +
+  labs(
+    title = "Manual cross-fitted DML",
+    x = expression((hat(tau)[DML] - tau[0]) / se(hat(tau)[DML])),
+    y = "Density"
+  ) +
+  theme_bw(base_size = 14)
+
+p_pkg_cf <- ggplot(res_dmlpkg, aes(x = std_tau)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 35, fill = "grey80", color = "black") +
+  stat_function(fun = dnorm, linewidth = 1) +
+  labs(
+    title = "DoubleML package",
+    x = expression((hat(tau)[DML] - tau[0]) / se(hat(tau)[DML])),
+    y = "Density"
+  ) +
+  theme_bw(base_size = 14)
+
+p_manual_cf + p_pkg_cf
+```
+
+
+
+```{r}
+bind_rows(
+  results %>%
+    summarise(method = "Naive ML",
+              mean_tau = mean(tau_hat),
+              bias_tau = mean(tau_hat - true_tau),
+              sd_tau = sd(tau_hat),
+              mean_se = mean(se_tau),
+              mean_std = mean(std_tau),
+              sd_std = sd(std_tau)),
+  res_manual %>%
+    summarise(method = "DR no splitting",
+              mean_tau = mean(tau_hat),
+              bias_tau = mean(tau_hat - true_tau),
+              sd_tau = sd(tau_hat),
+              mean_se = mean(se_tau),
+              mean_std = mean(std_tau),
+              sd_std = sd(std_tau)),
+  res_cf %>%
+    summarise(method = "DML cross-fitted",
+              mean_tau = mean(tau_hat),
+              bias_tau = mean(tau_hat - true_tau),
+              sd_tau = sd(tau_hat),
+              mean_se = mean(se_tau),
+              mean_std = mean(std_tau),
+              sd_std = sd(std_tau))
+)
+```
+
+
+**c(Bonus Question)**
+
+\includepdf[pages=1]{D:/WashU/PHD/Year 2/Sem 2/SDS 5320/Homework/Hw3_causal.pdf}
+
+```{r}
+## Confidence interval
+
+phi1_i <- out$psi1_i - out$mu1_hat
+se_mu1 <- sqrt(var(phi1_i) / n)
+
+
+## coveragee
+# true mu_1 = 1.49
+res_cf %>%
+  summarise(
+    coverage_mu1 = mean(ci_mu1_l <= true_mu1 & ci_mu1_u >= true_mu1),
+    avg_len_mu1 = mean(ci_mu1_u - ci_mu1_l)
+  )
+```
+
+
+
+
+
+
+## Part 2
+
+```{r}
+library(nnet)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(purrr)
+library(stringr)
+library(forcats)
+```
+
+
+```{r}
+# Load rdata
+obj_names <- load("mepsPS3.rdata")
+obj_names
+
+# Use the first object if needed
+dat <- get(obj_names[1])
+
+
+# dat <- meps.dat
+
+#str(dat)
+#dim(dat)
+names(dat)
+```
+
+
+```{r}
+# Variables requested
+y_var <- "healthExp"
+trt_var <- "race"
+
+cont_vars <- c("pcs", "mcs", "age", "bmi", "sinceCheckUp")
+
+cat_vars <- c(
+  "male", "married", "health", "mhealth", "anylim", "socialLim", "cogLim",
+  "exercise", "hibp", "chd", "emphysema", "cholesterol", "cancer", "stroke",
+  "diabetes", "angina", "arthritis", "asthma", "mi", "smoke"
+)
+
+all_needed <- c(y_var, trt_var, cont_vars, cat_vars)
+setdiff(all_needed, names(dat))
+```
+
+
+**data cleaning**
+
+```{r}
+meps <- dat %>%
+  dplyr::select(all_of(all_needed)) %>%
+  filter(complete.cases(.)) %>%
+  mutate(
+    race = factor(race),
+    race = fct_relevel(race, "White", "Asian", "Black", "Hispanic")
+  )
+
+# Convert categorical confounders to factors
+meps <- meps %>%
+  mutate(across(all_of(cat_vars), ~ as.factor(.)))
+
+# Keep continuous ones numeric
+meps <- meps %>%
+  mutate(across(all_of(cont_vars), ~ as.numeric(.)),
+         healthExp = as.numeric(healthExp))
+
+table(meps$race)
+summary(meps$healthExp)
+```
+
+
+**a** 
+
+```{r}
+# Multinomial logit formula
+gps_formula <- as.formula(
+  paste(trt_var, "~", paste(c(cont_vars, cat_vars), collapse = " + "))
+)
+
+# Fit GPS model
+gps_fit <- nnet::multinom(gps_formula, data = meps, trace = FALSE)
+
+summary(gps_fit)
+```
+
+
+```{r}
+gps_hat <- predict(gps_fit, type = "probs")
+
+# Ensure matrix format even if one column edge case happens
+gps_hat <- as.matrix(gps_hat)
+
+colnames(gps_hat)
+head(gps_hat)
+
+# Attach fitted probabilities
+for (lev in levels(meps$race)) {
+  meps[[paste0("gps_", lev)]] <- gps_hat[, lev]
+}
+
+## observed-treatment Prob for each unit:
+
+meps$gps_obs <- gps_hat[cbind(seq_len(nrow(meps)), match(meps$race, colnames(gps_hat)))]
+
+summary(meps$gps_obs)
+```
+
+**checking overlap**
+
+```{r}
+meps %>%
+  group_by(race) %>%
+  summarise(
+    n = n(),
+    min_gps = min(gps_obs),
+    p01 = quantile(gps_obs, 0.01),
+    p05 = quantile(gps_obs, 0.05),
+    p10 = quantile(gps_obs, 0.10),
+    median = median(gps_obs),
+    p90 = quantile(gps_obs, 0.90),
+    p95 = quantile(gps_obs, 0.95),
+    p99 = quantile(gps_obs, 0.99),
+    max_gps = max(gps_obs)
+  )
+```
+
+
+**plots**
+
+```{r}
+ggplot(meps, aes(x = gps_obs, color = race, fill = race)) +
+  geom_density(alpha = 0.15) +
+  labs(
+    title = "Overlap check: distribution of observed-group generalized propensity score",
+    x = "Estimated GPS for observed treatment",
+    y = "Density"
+  ) +
+  theme_bw(base_size = 14)
+
+
+
+ggplot(meps, aes(x = race, y = gps_obs, fill = race)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(
+    title = "Observed-group GPS by race",
+    x = "Race",
+    y = "Estimated GPS"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "none")
+```
+**Comment**
+
+We see a somewhat okay overlap between all groups in general but it is weak between some selected 2 groups like Asians vs Black or White vs Asian. 
+
+**b**
+
+Constructing Weights for IPW and overlap;
+
+```{r}
+meps$w_ipw <- 1 / meps$gps_obs
+
+summary(meps$w_ipw)
+quantile(meps$w_ipw, probs = c(.5, .9, .95, .99))
+
+```
+
+```{r}
+gps_mat <- gps_hat
+h_x <- 1 / rowSums(1 / gps_mat)
+
+meps$w_ow <- h_x / meps$gps_obs
+
+summary(meps$w_ow)
+quantile(meps$w_ow, probs = c(.5, .9, .95, .99))
+
+```
+
+
+```{r}
+## weight helper functions
+w_mean <- function(x, w) {
+  sum(w * x) / sum(w)
+}
+
+w_var <- function(x, w) {
+  mu <- w_mean(x, w)
+  sum(w * (x - mu)^2) / sum(w)
+}
+```
+
+
+```{r}
+# Build model matrix of confounders only
+X_df <- meps %>%
+  dplyr::select(all_of(c(cont_vars, cat_vars)))
+
+X_mm <- model.matrix(~ . - 1, data = X_df)
+X_bal <- as.data.frame(X_mm)
+
+colnames(X_bal) <- make.names(colnames(X_bal))
+```
+
+**Computing ASD**
+
+```{r}
+pairwise_asd <- function(X, A, w = NULL) {
+  if (is.null(w)) w <- rep(1, length(A))
+  
+  groups <- levels(A)
+  pairs <- combn(groups, 2, simplify = FALSE)
+  
+  out <- map_dfr(colnames(X), function(v) {
+    x <- X[[v]]
+    
+    map_dfr(pairs, function(pr) {
+      g1 <- pr[1]
+      g2 <- pr[2]
+      
+      i1 <- A == g1
+      i2 <- A == g2
+      
+      m1 <- w_mean(x[i1], w[i1])
+      m2 <- w_mean(x[i2], w[i2])
+      s1 <- w_var(x[i1], w[i1])
+      s2 <- w_var(x[i2], w[i2])
+      
+      sd_pool <- sqrt((s1 + s2) / 2)
+      asd <- ifelse(sd_pool > 0, abs(m1 - m2) / sd_pool, NA_real_)
+      
+      tibble(
+        variable = v,
+        group1 = g1,
+        group2 = g2,
+        asd = asd
+      )
+    })
+  })
+  
+  out
+}
+```
+
+
+**Compute balance tables**
+
+```{r}
+bal_unw <- pairwise_asd(X_bal, meps$race, w = rep(1, nrow(meps))) %>%
+  mutate(method = "Unweighted")
+
+bal_ipw <- pairwise_asd(X_bal, meps$race, w = meps$w_ipw) %>%
+  mutate(method = "IPW")
+
+bal_ow <- pairwise_asd(X_bal, meps$race, w = meps$w_ow) %>%
+  mutate(method = "Overlap")
+
+bal_all <- bind_rows(bal_unw, bal_ipw, bal_ow)
+```
+
+
+**Summary**
+
+```{r}
+bal_all %>%
+  group_by(method) %>%
+  summarise(
+    max_asd = max(asd, na.rm = TRUE),
+    mean_asd = mean(asd, na.rm = TRUE),
+    median_asd = median(asd, na.rm = TRUE),
+    prop_below_0_1 = mean(asd < 0.1, na.rm = TRUE)
+  )
+
+## worst covaraite
+
+bal_all %>%
+  group_by(method) %>%
+  slice_max(order_by = asd, n = 15) %>%
+  arrange(method, desc(asd))
+
+
+
+```
+
+```{r}
+## plot of worst covariates
+ggplot(bal_all, aes(x = asd, fill = method)) +
+  geom_histogram(bins = 30, alpha = 0.6, position = "identity") +
+  facet_wrap(~ method, scales = "free_y") +
+  geom_vline(xintercept = 0.1, linetype = 2) +
+  labs(
+    title = "Pairwise standardized differences across covariates",
+    x = "Absolute standardized difference",
+    y = "Count"
+  ) + theme(axis.text.x = element_text(angle = 60))+
+  theme_bw(base_size = 14)
+
+
+
+
+
+
+```
+
+
+```{r}
+
+## love plot
+library(cobalt)
+
+
+love_df <- bal_all %>%
+  group_by(method, variable) %>%
+  summarise(max_asd = max(asd, na.rm = TRUE), .groups = "drop") %>%
+  group_by(variable) %>%
+  mutate(order_var = max(max_asd, na.rm = TRUE)) %>%
+  ungroup() %>%
+  arrange(order_var) %>%
+  mutate(variable = factor(variable, levels = unique(variable)))
+
+ggplot(love_df, aes(x = max_asd, y = variable, color = method)) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 0.1, linetype = 2, color = "red") +
+  labs(
+    title = "Love Plot: Covariate Balance",
+    x = "Maximum Pairwise Standardized Difference",
+    y = "Covariate",
+    color = "Method"
+  ) +
+  theme_bw(base_size = 14)
+```
+
+
+
+```{r}
+## effective sample size
+ess_fun <- function(w) (sum(w)^2) / sum(w^2)
+
+meps %>%
+  group_by(race) %>%
+  summarise(
+    n = n(),
+    ess_ipw = ess_fun(w_ipw),
+    ess_ow  = ess_fun(w_ow)
+  )
+```
+
+
+
+```{r}
+weighted_group_means <- function(data, y, trt, w) {
+  yv <- data[[y]]
+  av <- data[[trt]]
+  wv <- data[[w]]
+  
+  tibble(
+    race = levels(av),
+    mean = map_dbl(levels(av), function(g) {
+      idx <- av == g
+      sum(wv[idx] * yv[idx]) / sum(wv[idx])
+    })
+  )
+}
+
+
+mu_ipw <- weighted_group_means(meps, y = "healthExp", trt = "race", w = "w_ipw")
+mu_ow  <- weighted_group_means(meps, y = "healthExp", trt = "race", w = "w_ow")
+
+mu_ipw
+mu_ow
+```
+
+
+**Contrast**
+
+```{r}
+get_contrast <- function(mu_tbl, g1, g2, method_name) {
+  m1 <- mu_tbl$mean[mu_tbl$race == g1]
+  m2 <- mu_tbl$mean[mu_tbl$race == g2]
+  tibble(
+    method = method_name,
+    contrast = paste0(g1, " - ", g2),
+    estimate = m1 - m2
+  )
+}
+
+est_ipw <- bind_rows(
+  get_contrast(mu_ipw, "White", "Black", "IPW"),
+  get_contrast(mu_ipw, "White", "Asian", "IPW"),
+  get_contrast(mu_ipw, "White", "Hispanic", "IPW")
+)
+
+est_ow <- bind_rows(
+  get_contrast(mu_ow, "White", "Black", "Overlap"),
+  get_contrast(mu_ow, "White", "Asian", "Overlap"),
+  get_contrast(mu_ow, "White", "Hispanic", "Overlap")
+)
+
+bind_rows(est_ipw, est_ow)
+```
+
+
+
+**SE**
+
+```{r}
+estimate_pairwise_effects <- function(data) {
+  # Refit multinomial GPS
+  gps_fit_b <- nnet::multinom(gps_formula, data = data, trace = FALSE)
+  gps_b <- as.matrix(predict(gps_fit_b, type = "probs"))
+  
+  data$gps_obs <- gps_b[cbind(seq_len(nrow(data)), match(data$race, colnames(gps_b)))]
+  
+  # IPW
+  data$w_ipw <- 1 / data$gps_obs
+  
+  # Overlap
+  h_b <- 1 / rowSums(1 / gps_b)
+  data$w_ow <- h_b / data$gps_obs
+  
+  mu_ipw_b <- weighted_group_means(data, y = "healthExp", trt = "race", w = "w_ipw")
+  mu_ow_b  <- weighted_group_means(data, y = "healthExp", trt = "race", w = "w_ow")
+  
+  c(
+    ipw_white_black = mu_ipw_b$mean[mu_ipw_b$race == "White"] - mu_ipw_b$mean[mu_ipw_b$race == "Black"],
+    ipw_white_asian = mu_ipw_b$mean[mu_ipw_b$race == "White"] - mu_ipw_b$mean[mu_ipw_b$race == "Asian"],
+    ipw_white_hisp  = mu_ipw_b$mean[mu_ipw_b$race == "White"] - mu_ipw_b$mean[mu_ipw_b$race == "Hispanic"],
+    ow_white_black  = mu_ow_b$mean[mu_ow_b$race == "White"] - mu_ow_b$mean[mu_ow_b$race == "Black"],
+    ow_white_asian  = mu_ow_b$mean[mu_ow_b$race == "White"] - mu_ow_b$mean[mu_ow_b$race == "Asian"],
+    ow_white_hisp   = mu_ow_b$mean[mu_ow_b$race == "White"] - mu_ow_b$mean[mu_ow_b$race == "Hispanic"]
+  )
+}
+```
+
+
+```{r}
+set.seed(768)
+
+B <- 500   
+boot_mat <- replicate(B, {
+  idx <- sample(seq_len(nrow(meps)), size = nrow(meps), replace = TRUE)
+  dat_b <- meps[idx, ]
+  estimate_pairwise_effects(dat_b)
+})
+
+boot_mat <- t(boot_mat)
+boot_df <- as.data.frame(boot_mat)
+
+apply(boot_df, 2, sd)
+```
+
+
+
+```{r}
+point_est <- estimate_pairwise_effects(meps)
+
+se_est <- apply(boot_df, 2, sd)
+
+final_tbl <- tibble(
+  term = names(point_est),
+  estimate = as.numeric(point_est),
+  se = as.numeric(se_est)
+) %>%
+  mutate(
+    lwr = estimate - 1.96 * se,
+    upr = estimate + 1.96 * se,
+    method = case_when(
+      str_detect(term, "^ipw") ~ "IPW",
+      str_detect(term, "^ow")  ~ "Overlap"
+    ),
+    contrast = case_when(
+      str_detect(term, "white_black") ~ "White - Black",
+      str_detect(term, "white_asian") ~ "White - Asian",
+      str_detect(term, "white_hisp")  ~ "White - Hispanic"
+    )
+  ) %>%
+  dplyr::select(method, contrast, estimate, se, lwr, upr)
+
+final_tbl
+
+
+final_tbl %>%
+  arrange(contrast, method)
+```
+
