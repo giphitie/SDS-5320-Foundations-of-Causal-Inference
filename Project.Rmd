@@ -1,0 +1,1274 @@
+---
+title: "Causal Effects of Environmental Tobacco Smoke Exposure on Sleep Disturbances Using NHANES Data"
+author: "Gifty Osei and Jacob Antici"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_caption: true
+    latex_engine: xelatex
+fontsize: 12pt
+geometry: margin=1in
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{amsmath}
+  - \usepackage{float}
+  - \floatplacement{figure}{H}
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+# Introduction
+
+Sleep quality is an important determinant of long-term health outcomes, including cardiovascular risk, metabolic disorders, and cognitive functioning. Although tobacco exposure has been extensively studied in relation to respiratory and cardiovascular disease, its relationship with sleep disturbances is less well understood. Environmental tobacco smoke (ETS), commonly known as secondhand smoke, exposes non-smokers to nicotine and other harmful compounds that may disrupt sleep architecture through neurological and respiratory pathways.
+
+This project estimates the **causal effect** of environmental tobacco smoke exposure on sleep disturbances using observational data from the 2017--2018 National Health and Nutrition Examination Survey (NHANES). Because treatment assignment is not randomized, we employ several causal inference methods: inverse probability weighting (IPW), propensity score matching, and augmented inverse probability weighting (AIPW), a doubly robust estimator. We also conduct sensitivity analyses across multiple exposure thresholds and perform diagnostic checks for covariate balance and positivity.
+
+# Data Description
+
+We use three NHANES 2017--2018 datasets:
+
+- **COT\_J.xpt**: Laboratory measurements of serum cotinine (LBXCOT), a biomarker for nicotine exposure including secondhand smoke.
+- **SLQ\_J.xpt**: Sleep questionnaire responses, including our primary outcome SLQ050 (trouble staying asleep), sleep duration (SLD012), bedtime (SLQ300), and wake time (SLQ310).
+- **DEMO\_J.xpt**: Demographic variables including age (RIDAGEYR), sex (RIAGENDR), race/ethnicity (RIDRETH3), and income-to-poverty ratio (INDFMPIR).
+
+All datasets are merged using the NHANES participant identifier SEQN.
+
+# Data Loading and Preprocessing
+
+```{r load-libraries}
+# =========================
+# Load required libraries
+# =========================
+library(haven)
+library(dplyr)
+library(ggplot2)
+library(cobalt)
+library(MatchIt)
+library(tableone)
+library(gridExtra)
+library(knitr)
+library(kableExtra)
+library(sandwich)
+library(boot)
+library(grf)
+```
+
+```{r load-data}
+# =========================
+# Read and merge all three NHANES datasets
+# =========================
+cot  <- read_xpt("COT_J.xpt")
+slq  <- read_xpt("SLQ_J.xpt")
+demo <- read_xpt("DEMO_J.xpt")
+
+cat("COT_J dimensions:", dim(cot), "\n")
+cat("SLQ_J dimensions:", dim(slq), "\n")
+cat("DEMO_J dimensions:", dim(demo), "\n")
+
+# Merge all three datasets on SEQN
+dat <- cot %>%
+  inner_join(slq, by = "SEQN") %>%
+  inner_join(demo, by = "SEQN")
+
+cat("Merged dataset dimensions:", dim(dat), "\n")
+```
+
+```{r preprocessing}
+# =========================
+# Clean and create analysis variables
+# =========================
+
+# Clean SLQ050: 1 = Yes (trouble sleeping), 2 = No, 7/9 = Refused/Don't know
+# Remove refused/don't know responses
+dat_clean <- dat %>%
+  filter(SLQ050 %in% c(1, 2)) %>%
+  filter(!is.na(LBXCOT)) %>%
+  filter(!is.na(RIDAGEYR), !is.na(RIAGENDR), !is.na(RIDRETH3), !is.na(INDFMPIR)) %>%
+  mutate(
+    # Outcome: trouble staying asleep (binary)
+    Y = ifelse(SLQ050 == 1, 1, 0),
+
+    # Covariates
+    age    = RIDAGEYR,
+    sex    = factor(RIAGENDR, levels = c(1, 2), labels = c("Male", "Female")),
+    race   = factor(RIDRETH3, levels = c(1, 2, 3, 4, 6, 7),
+                    labels = c("Mexican American", "Other Hispanic",
+                               "Non-Hispanic White", "Non-Hispanic Black",
+                               "Non-Hispanic Asian", "Other/Multi")),
+    income = INDFMPIR,
+
+    # Sleep duration (continuous covariate for some analyses)
+    sleep_duration = SLD012,
+
+    # Log cotinine for visualization (handle zeros)
+    log_cotinine = log(LBXCOT + 0.01)
+  )
+
+cat("Analysis sample size after cleaning:", nrow(dat_clean), "\n")
+cat("Outcome prevalence (trouble sleeping):", mean(dat_clean$Y), "\n")
+```
+
+```{r treatment-thresholds}
+# =========================
+# Define treatment at multiple thresholds for sensitivity analysis
+# =========================
+# tau = 0.05: Standard secondhand smoke exposure cutoff
+# tau = 1.00: Higher exposure threshold (substantial SHS or light active smoking)
+
+dat_clean <- dat_clean %>%
+  mutate(
+    T_005 = ifelse(LBXCOT > 0.05, 1, 0),
+    T_100 = ifelse(LBXCOT > 1.00, 1, 0)
+  )
+
+cat("\n--- Treatment prevalence ---\n")
+cat("tau = 0.05:", mean(dat_clean$T_005), "\n")
+cat("tau = 1.00:", mean(dat_clean$T_100), "\n")
+```
+
+\newpage
+
+# Exploratory Data Analysis
+
+## Summary Statistics
+
+```{r summary-table}
+# =========================
+# Table 1: Summary statistics by treatment group
+# =========================
+# Using tau = 1 as the primary analysis
+dat_clean$T <- dat_clean$T_100
+
+vars <- c("age", "sex", "race", "income", "sleep_duration", "Y")
+cat_vars <- c("sex", "race")
+
+tab1 <- CreateTableOne(vars = vars, strata = "T", data = dat_clean,
+                       factorVars = cat_vars, test = TRUE)
+print(tab1, smd = TRUE, showAllLevels = TRUE)
+```
+
+## Cotinine Distribution
+
+```{r cotinine-dist, fig.cap="Distribution of serum cotinine levels (log scale). Vertical dashed lines indicate the two thresholds used in the analysis.", fig.height=4}
+
+ggplot(dat_clean, aes(x = log_cotinine)) +
+  geom_histogram(bins = 60, fill = "steelblue", color = "white", alpha = 0.7) +
+  geom_vline(xintercept = log(0.05 + 0.01), linetype = "dashed", color = "red", linewidth = 0.8) +
+  geom_vline(xintercept = log(1.00 + 0.01), linetype = "dashed", color = "darkred", linewidth = 0.8) +
+  annotate("text", x = log(0.05 + 0.01), y = Inf, label = "tau = 0.05",
+           vjust = 2, hjust = -0.1, color = "red", size = 3.5) +
+  annotate("text", x = log(1.00 + 0.01), y = Inf, label = "tau = 1.00",
+           vjust = 2, hjust = -0.1, color = "darkred", size = 3.5) +
+  labs(x = "Log(Cotinine + 0.01)", y = "Count",
+       title = "Distribution of Serum Cotinine Levels") +
+  theme_bw()
+```
+
+## Sleep Trouble Prevalence by Covariates
+
+```{r sleep-by-covariates, fig.cap="Prevalence of sleep trouble across demographic groups.", fig.height=6, fig.width=9}
+p1 <- dat_clean %>%
+  mutate(age_group = cut(age, breaks = c(0, 30, 45, 60, 80),
+                         labels = c("16-30", "31-45", "46-60", "61-80"))) %>%
+  group_by(age_group) %>%
+  summarise(sleep_trouble = mean(Y), .groups = "drop") %>%
+  ggplot(aes(x = age_group, y = sleep_trouble)) +
+  geom_col(fill = "steelblue", alpha = 0.8) +
+  labs(x = "Age Group", y = "P(Sleep Trouble)", title = "By Age") +
+  theme_bw()
+
+p2 <- dat_clean %>%
+  group_by(sex) %>%
+  summarise(sleep_trouble = mean(Y), .groups = "drop") %>%
+  ggplot(aes(x = sex, y = sleep_trouble)) +
+  geom_col(fill = "steelblue", alpha = 0.8) +
+  labs(x = "Sex", y = "P(Sleep Trouble)", title = "By Sex") +
+  theme_bw()
+
+p3 <- dat_clean %>%
+  group_by(race) %>%
+  summarise(sleep_trouble = mean(Y), .groups = "drop") %>%
+  ggplot(aes(x = race, y = sleep_trouble)) +
+  geom_col(fill = "steelblue", alpha = 0.8) +
+  labs(x = "", y = "P(Sleep Trouble)", title = "By Race/Ethnicity") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+
+p4 <- dat_clean %>%
+  mutate(income_group = cut(income, breaks = c(0, 1, 2, 3, 5),
+                            labels = c("<1", "1-2", "2-3", "3-5"))) %>%
+  group_by(income_group) %>%
+  summarise(sleep_trouble = mean(Y), .groups = "drop") %>%
+  ggplot(aes(x = income_group, y = sleep_trouble)) +
+  geom_col(fill = "steelblue", alpha = 0.8) +
+  labs(x = "Income-to-Poverty Ratio", y = "P(Sleep Trouble)", title = "By Income") +
+  theme_bw()
+
+grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+## Outcome by Treatment Status
+
+```{r outcome-by-treatment, fig.cap="Sleep trouble prevalence by tobacco smoke exposure status at both thresholds.", fig.height=4}
+plot_dat <- data.frame(
+  Threshold = rep(c("tau = 0.05", "tau = 1.00"), each = 2),
+  Exposed = rep(c("Unexposed", "Exposed"), 2),
+  Prevalence = c(
+    mean(dat_clean$Y[dat_clean$T_005 == 0]),
+    mean(dat_clean$Y[dat_clean$T_005 == 1]),
+    mean(dat_clean$Y[dat_clean$T_100 == 0]),
+    mean(dat_clean$Y[dat_clean$T_100 == 1])
+  )
+)
+
+ggplot(plot_dat, aes(x = Exposed, y = Prevalence, fill = Exposed)) +
+  geom_col(alpha = 0.8, width = 0.6) +
+  facet_wrap(~ Threshold) +
+  scale_fill_manual(values = c("Unexposed" = "steelblue", "Exposed" = "tomato")) +
+  labs(y = "P(Sleep Trouble)", title = "Naive Comparison of Sleep Trouble by Exposure") +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+\newpage
+
+# Causal Inference Framework
+
+## Notation and Assumptions
+
+Let $T_i \in \{0, 1\}$ denote the treatment indicator for individual $i$, where $T_i = \mathbf{1}(\text{LBXCOT}_i > \tau)$. Let $Y_i \in \{0, 1\}$ indicate whether individual $i$ reports trouble staying asleep. The potential outcomes are $Y_i(1)$ and $Y_i(0)$ under exposure and non-exposure, respectively.
+
+The **average treatment effect (ATE)** is:
+$$\text{ATE} = \mathbb{E}[Y(1) - Y(0)]$$
+
+We invoke the following assumptions:
+
+1. **SUTVA (Stable Unit Treatment Value Assumption)**: One individual's exposure does not affect another's sleep outcome, and there is a single version of treatment.
+2. **Unconfoundedness (Ignorability)**: $\{Y(0), Y(1)\} \perp\!\!\!\perp T \mid X$, where $X$ includes age, sex, race/ethnicity, and income-to-poverty ratio.
+3. **Positivity (Overlap)**: $0 < P(T = 1 \mid X = x) < 1$ for all $x$ in the support of $X$.
+
+## Naive Estimator
+
+```{r naive-estimator}
+# =========================
+# Naive (unadjusted) difference in means
+# =========================
+naive_ate <- function(dat, T_var) {
+  T_vec <- dat[[T_var]]
+  p1 <- mean(dat$Y[T_vec == 1])
+  p0 <- mean(dat$Y[T_vec == 0])
+  n1 <- sum(T_vec == 1)
+  n0 <- sum(T_vec == 0)
+
+  # Standard error via delta method for difference in proportions
+  se <- sqrt(p1 * (1 - p1) / n1 + p0 * (1 - p0) / n0)
+
+  data.frame(
+    Estimator = "Naive",
+    ATE = p1 - p0,
+    SE = se,
+    CI_lower = (p1 - p0) - 1.96 * se,
+    CI_upper = (p1 - p0) + 1.96 * se,
+    p1 = p1, p0 = p0, n1 = n1, n0 = n0
+  )
+}
+
+naive_005 <- naive_ate(dat_clean, "T_005")
+naive_100 <- naive_ate(dat_clean, "T_100")
+
+cat("=== Naive Estimator (tau = 0.05) ===\n")
+cat(sprintf("P(Y=1|T=1) = %.4f, P(Y=1|T=0) = %.4f\n", naive_005$p1, naive_005$p0))
+cat(sprintf("ATE = %.4f (SE = %.4f), 95%% CI: [%.4f, %.4f]\n",
+            naive_005$ATE, naive_005$SE, naive_005$CI_lower, naive_005$CI_upper))
+
+cat("\n=== Naive Estimator (tau = 1.00) ===\n")
+cat(sprintf("P(Y=1|T=1) = %.4f, P(Y=1|T=0) = %.4f\n", naive_100$p1, naive_100$p0))
+cat(sprintf("ATE = %.4f (SE = %.4f), 95%% CI: [%.4f, %.4f]\n",
+            naive_100$ATE, naive_100$SE, naive_100$CI_lower, naive_100$CI_upper))
+```
+
+\newpage
+
+# Propensity Score Estimation
+
+The propensity score is defined as $e(X_i) = P(T_i = 1 \mid X_i)$. We estimate this using logistic regression:
+
+$$\text{logit}[e(X)] = \beta_0 + \beta_1 \cdot \text{age} + \beta_2 \cdot \text{sex} + \beta_3 \cdot \text{race} + \beta_4 \cdot \text{income}$$
+
+```{r propensity-score}
+# =========================
+# Propensity score estimation (for primary threshold tau = 1)
+# =========================
+ps_formula <- T ~ age + sex + race + income
+
+# Fit PS model for tau = 1.00
+ps_model <- glm(ps_formula, data = dat_clean, family = binomial())
+dat_clean$ps <- predict(ps_model, type = "response")
+
+summary(ps_model)
+```
+
+## Propensity Score Diagnostics
+
+### Overlap Assessment
+
+```{r ps-overlap, fig.cap="Propensity score distributions by treatment group. Good overlap is essential for valid causal inference.", fig.height=4}
+
+ggplot(dat_clean, aes(x = ps, fill = factor(T))) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 50, color = "white") +
+  scale_fill_manual(values = c("0" = "steelblue", "1" = "tomato"),
+                    labels = c("Unexposed", "Exposed")) +
+  labs(x = "Propensity Score", y = "Count", fill = "Treatment",
+       title = "Propensity Score Distribution by Treatment Group") +
+  theme_bw()
+```
+
+```{r ps-density, fig.cap="Density plot of propensity scores by treatment group.", fig.height=4}
+
+ggplot(dat_clean, aes(x = ps, color = factor(T), fill = factor(T))) +
+  geom_density(alpha = 0.3) +
+  scale_fill_manual(values = c("0" = "steelblue", "1" = "tomato"),
+                    labels = c("Unexposed", "Exposed")) +
+  scale_color_manual(values = c("0" = "steelblue", "1" = "tomato"),
+                     labels = c("Unexposed", "Exposed")) +
+  labs(x = "Propensity Score", y = "Density", fill = "Treatment", color = "Treatment",
+       title = "Propensity Score Distribution") +
+  theme_bw()
+```
+
+### Positivity Check
+
+```{r positivity-check}
+# Check for extreme propensity scores
+cat("Propensity Score Summary:\n")
+cat(sprintf("  Min: %.4f\n  Max: %.4f\n  Mean: %.4f\n",
+            min(dat_clean$ps), max(dat_clean$ps), mean(dat_clean$ps)))
+
+cat(sprintf("\nProportion with PS < 0.01: %.4f\n", mean(dat_clean$ps < 0.01)))
+cat(sprintf("Proportion with PS > 0.99: %.4f\n", mean(dat_clean$ps > 0.99)))
+
+# Trimming for extreme weights
+trim_lower <- 0.01
+trim_upper <- 0.99
+dat_trimmed <- dat_clean %>%
+  filter(ps >= trim_lower & ps <= trim_upper)
+
+cat(sprintf("\nSample size after PS trimming [%.2f, %.2f]: %d (dropped %d)\n",
+            trim_lower, trim_upper, nrow(dat_trimmed),
+            nrow(dat_clean) - nrow(dat_trimmed)))
+```
+
+\newpage
+
+# Inverse Probability Weighting (IPW)
+
+The IPW estimator uses the Horvitz-Thompson form:
+
+$$\hat{\tau}_{\text{IPW}} = \frac{1}{n} \sum_{i=1}^{n} \left[ \frac{T_i Y_i}{\hat{e}(X_i)} - \frac{(1 - T_i) Y_i}{1 - \hat{e}(X_i)} \right]$$
+
+We also use the **normalized (Hajek) IPW estimator** which is more stable:
+
+$$\hat{\tau}_{\text{Hajek}} = \frac{\sum_{i=1}^{n} \frac{T_i Y_i}{\hat{e}(X_i)}}{\sum_{i=1}^{n} \frac{T_i}{\hat{e}(X_i)}} - \frac{\sum_{i=1}^{n} \frac{(1 - T_i) Y_i}{1 - \hat{e}(X_i)}}{\sum_{i=1}^{n} \frac{(1 - T_i)}{1 - \hat{e}(X_i)}}$$
+
+```{r ipw-estimator}
+# =========================
+# IPW Estimators
+# =========================
+
+ipw_estimate <- function(dat) {
+  T_vec <- dat$T
+  Y_vec <- dat$Y
+  ps_vec <- dat$ps
+  n <- length(Y_vec)
+
+  # --- Horvitz-Thompson IPW ---
+  tau_ht <- (1/n) * sum(T_vec * Y_vec / ps_vec - (1 - T_vec) * Y_vec / (1 - ps_vec))
+
+  # --- Hajek (Normalized) IPW ---
+  mu1_hajek <- sum(T_vec * Y_vec / ps_vec) / sum(T_vec / ps_vec)
+  mu0_hajek <- sum((1 - T_vec) * Y_vec / (1 - ps_vec)) / sum((1 - T_vec) / (1 - ps_vec))
+  tau_hajek <- mu1_hajek - mu0_hajek
+
+  list(
+    ht = tau_ht,
+    hajek = tau_hajek,
+    mu1_hajek = mu1_hajek,
+    mu0_hajek = mu0_hajek
+  )
+}
+
+# IPW on full sample
+ipw_full <- ipw_estimate(dat_clean)
+cat("=== IPW Estimates (Full Sample, tau = 1.00) ===\n")
+cat(sprintf("Horvitz-Thompson: %.4f\n", ipw_full$ht))
+cat(sprintf("Hajek (normalized): %.4f\n", ipw_full$hajek))
+
+# # IPW on trimmed sample - we did not trim
+# ipw_trim <- ipw_estimate(dat_trimmed)
+# cat("\n=== IPW Estimates (Trimmed Sample) ===\n")
+# cat(sprintf("Horvitz-Thompson: %.4f\n", ipw_trim$ht))
+# cat(sprintf("Hajek (normalized): %.4f\n", ipw_trim$hajek))
+```
+
+## Bootstrap Confidence Intervals for IPW
+
+```{r ipw-bootstrap}
+# =========================
+# Bootstrap standard errors for IPW
+# =========================
+set.seed(42)
+
+boot_ipw <- function(data, indices) {
+  d <- data[indices, ]
+  # Re-estimate propensity score
+  ps_mod <- glm(T ~ age + sex + race + income, data = d, family = binomial())
+  d$ps <- predict(ps_mod, type = "response")
+  # Trim
+  d <- d[d$ps >= 0.01 & d$ps <= 0.99, ]
+
+  T_vec <- d$T
+  Y_vec <- d$Y
+  ps_vec <- d$ps
+
+  # Hajek estimator
+  mu1 <- sum(T_vec * Y_vec / ps_vec) / sum(T_vec / ps_vec)
+  mu0 <- sum((1 - T_vec) * Y_vec / (1 - ps_vec)) / sum((1 - T_vec) / (1 - ps_vec))
+  mu1 - mu0
+}
+
+boot_result <- boot(dat_clean, boot_ipw, R = 1000)
+boot_ci <- boot.ci(boot_result, type = c("norm", "perc"))
+
+cat("=== Bootstrap Results for IPW-Hajek (tau = 1.00) ===\n")
+cat(sprintf("Point estimate: %.4f\n", boot_result$t0))
+cat(sprintf("Bootstrap SE: %.4f\n", sd(boot_result$t)))
+cat(sprintf("95%% Normal CI: [%.4f, %.4f]\n", boot_ci$normal[2], boot_ci$normal[3]))
+cat(sprintf("95%% Percentile CI: [%.4f, %.4f]\n", boot_ci$percent[4], boot_ci$percent[5]))
+```
+
+```{r boot-dist, fig.cap="Bootstrap distribution of the IPW-Hajek ATE estimate.", fig.height=4}
+ggplot(data.frame(ATE = boot_result$t), aes(x = ATE)) +
+  geom_histogram(bins = 40, fill = "steelblue", color = "white", alpha = 0.7) +
+  geom_vline(xintercept = boot_result$t0, linetype = "dashed", color = "red", linewidth = 0.8) +
+  labs(x = "ATE Estimate", y = "Count", title = "Bootstrap Distribution of IPW ATE") +
+  theme_bw()
+```
+
+\newpage
+
+# Covariate Balance Assessment
+
+```{r balance-unweighted, fig.cap="Standardized mean differences before weighting.", fig.height=5}
+# =========================
+# Unweighted balance
+# =========================
+bal_unweighted <- bal.tab(
+  T ~ age + sex + race + income,
+  data = dat_clean,
+  stats = c("m", "v"),
+  un = TRUE
+)
+print(bal_unweighted)
+```
+
+```{r balance-weighted, fig.cap="Covariate balance before and after IPW.", fig.height=5}
+# =========================
+# Weighted balance (IPW)
+# =========================
+# Create IPW weights
+dat_clean$ipw_weights <- ifelse(dat_clean$T == 1,
+                                 1 / dat_clean$ps,
+                                 1 / (1 - dat_clean$ps))
+
+love.plot(
+  T ~ age + sex + race + income,
+  data = dat_clean,
+  weights = dat_clean$ipw_weights,
+  method = "weighting",
+  abs = TRUE,
+  thresholds = c(m = 0.1),
+  var.order = "unadjusted",
+  colors = c("steelblue", "tomato"),
+  shapes = c("circle", "triangle"),
+  title = "Covariate Balance: Unweighted vs. IPW"
+)
+```
+
+\newpage
+
+# Propensity Score Matching
+
+We use nearest-neighbor matching on the estimated propensity score with a caliper of 0.2 standard deviations of the logit propensity score.
+
+```{r matching}
+# =========================
+# Propensity Score Matching via MatchIt
+# =========================
+match_out <- matchit(
+  T ~ age + sex + race + income,
+  data = dat_clean,
+  method = "nearest",
+  distance = "logit",
+  caliper = 0.2,
+  ratio = 1,
+  replace = FALSE
+)
+
+summary(match_out)
+```
+
+```{r match-balance, fig.cap="Covariate balance before and after propensity score matching.", fig.height=5}
+love.plot(match_out,
+          abs = TRUE,
+          thresholds = c(m = 0.1),
+          colors = c("steelblue", "tomato"),
+          shapes = c("circle", "triangle"),
+          title = "Covariate Balance: Before vs. After Matching")
+```
+
+```{r match-ate}
+# =========================
+# ATE from matched sample
+# =========================
+dat_matched <- match.data(match_out)
+
+cat("Matched sample size:", nrow(dat_matched), "\n")
+cat("Treated in matched sample:", sum(dat_matched$T == 1), "\n")
+cat("Control in matched sample:", sum(dat_matched$T == 0), "\n")
+
+# Outcome regression on matched data
+match_model <- glm(Y ~ T, data = dat_matched, weights = weights, family = quasibinomial())
+match_ate <- coef(match_model)["T"]
+match_se <- sqrt(vcovHC(match_model, type = "HC2")["T", "T"])
+
+cat(sprintf("\nMatching ATE: %.4f (SE = %.4f)\n", match_ate, match_se))
+cat(sprintf("95%% CI: [%.4f, %.4f]\n", match_ate - 1.96 * match_se, match_ate + 1.96 * match_se))
+```
+
+\newpage
+
+# Doubly Robust Estimation (AIPW)
+
+The augmented inverse probability weighting (AIPW) estimator combines outcome modeling and propensity score weighting. It is **doubly robust**: consistent if either the propensity score model or the outcome model is correctly specified.
+
+$$\hat{\tau}_{\text{AIPW}} = \frac{1}{n}\sum_{i=1}^{n}\left[\frac{T_i Y_i}{\hat{e}(X_i)} - \frac{T_i - \hat{e}(X_i)}{\hat{e}(X_i)}\hat{m}_1(X_i)\right] - \frac{1}{n}\sum_{i=1}^{n}\left[\frac{(1-T_i)Y_i}{1-\hat{e}(X_i)} + \frac{T_i - \hat{e}(X_i)}{1-\hat{e}(X_i)}\hat{m}_0(X_i)\right]$$
+
+where $\hat{m}_1(X)$ and $\hat{m}_0(X)$ are the estimated outcome regression functions for the treated and control groups, respectively.
+
+```{r aipw}
+# =========================
+# AIPW (Doubly Robust) Estimator
+# =========================
+aipw_estimate <- function(dat) {
+  # Step 1: Outcome models
+  out_model_1 <- glm(Y ~ age + sex + race + income,
+                      data = dat[dat$T == 1, ], family = binomial())
+  out_model_0 <- glm(Y ~ age + sex + race + income,
+                      data = dat[dat$T == 0, ], family = binomial())
+
+  # Step 2: Predicted outcomes for everyone
+  m1_hat <- predict(out_model_1, newdata = dat, type = "response")
+  m0_hat <- predict(out_model_0, newdata = dat, type = "response")
+
+  T_vec <- dat$T
+  Y_vec <- dat$Y
+  ps_vec <- dat$ps
+  n <- nrow(dat)
+
+  # Step 3: AIPW estimator
+  mu1_aipw <- (1/n) * sum(T_vec * Y_vec / ps_vec -
+                            (T_vec - ps_vec) / ps_vec * m1_hat)
+  mu0_aipw <- (1/n) * sum((1 - T_vec) * Y_vec / (1 - ps_vec) +
+                            (T_vec - ps_vec) / (1 - ps_vec) * m0_hat)
+
+  tau_aipw <- mu1_aipw - mu0_aipw
+
+  # Influence function for variance estimation
+  phi <- T_vec * Y_vec / ps_vec - (T_vec - ps_vec) / ps_vec * m1_hat -
+    ((1 - T_vec) * Y_vec / (1 - ps_vec) + (T_vec - ps_vec) / (1 - ps_vec) * m0_hat) -
+    tau_aipw
+
+  se_aipw <- sqrt(mean(phi^2) / n)
+
+  list(
+    ate = tau_aipw,
+    se = se_aipw,
+    mu1 = mu1_aipw,
+    mu0 = mu0_aipw
+  )
+}
+
+# AIPW on full sample
+aipw_full <- aipw_estimate(dat_clean)
+cat("=== AIPW Estimate (tau = 1.00) ===\n")
+cat(sprintf("ATE: %.4f (SE = %.4f)\n", aipw_full$ate, aipw_full$se))
+cat(sprintf("95%% CI: [%.4f, %.4f]\n",
+            aipw_full$ate - 1.96 * aipw_full$se,
+            aipw_full$ate + 1.96 * aipw_full$se))
+```
+
+## Bootstrap for AIPW
+
+```{r aipw-bootstrap}
+set.seed(42)
+
+boot_aipw <- function(data, indices) {
+  d <- data[indices, ]
+
+  # Re-estimate propensity score
+  ps_mod <- glm(T ~ age + sex + race + income, data = d, family = binomial())
+  d$ps <- predict(ps_mod, type = "response")
+  d <- d[d$ps >= 0.01 & d$ps <= 0.99, ]
+
+  # Outcome models
+  m1 <- glm(Y ~ age + sex + race + income, data = d[d$T == 1, ], family = binomial())
+  m0 <- glm(Y ~ age + sex + race + income, data = d[d$T == 0, ], family = binomial())
+
+  m1_hat <- predict(m1, newdata = d, type = "response")
+  m0_hat <- predict(m0, newdata = d, type = "response")
+
+  T_vec <- d$T; Y_vec <- d$Y; ps_vec <- d$ps; n <- nrow(d)
+
+  mu1 <- (1/n) * sum(T_vec * Y_vec / ps_vec - (T_vec - ps_vec) / ps_vec * m1_hat)
+  mu0 <- (1/n) * sum((1 - T_vec) * Y_vec / (1 - ps_vec) + (T_vec - ps_vec) / (1 - ps_vec) * m0_hat)
+  mu1 - mu0
+}
+
+boot_aipw_result <- boot(dat_clean, boot_aipw, R = 1000)
+boot_aipw_ci <- boot.ci(boot_aipw_result, type = c("norm", "perc"))
+
+cat("=== Bootstrap AIPW Results ===\n")
+cat(sprintf("Point estimate: %.4f\n", boot_aipw_result$t0))
+cat(sprintf("Bootstrap SE: %.4f\n", sd(boot_aipw_result$t)))
+cat(sprintf("95%% Normal CI: [%.4f, %.4f]\n", boot_aipw_ci$normal[2], boot_aipw_ci$normal[3]))
+```
+
+\newpage
+
+# Sensitivity Analysis: Threshold Comparison
+
+```{r sensitivity-threshold}
+# =========================
+# Run all estimators at tau = 0.05
+# =========================
+dat_005 <- dat_clean
+dat_005$T <- dat_005$T_005
+
+# PS model for tau = 0.05
+ps_mod_005 <- glm(T ~ age + sex + race + income, data = dat_005, family = binomial())
+dat_005$ps <- predict(ps_mod_005, type = "response")
+
+# Naive
+naive_005_res <- naive_ate(dat_005, "T")
+
+# IPW (Hajek)
+ipw_005 <- ipw_estimate(dat_005)
+
+# Matching
+match_005 <- matchit(T ~ age + sex + race + income, data = dat_005,
+                      method = "nearest", distance = "logit", caliper = 0.2)
+dat_matched_005 <- match.data(match_005)
+match_mod_005 <- glm(Y ~ T, data = dat_matched_005, weights = weights, family = quasibinomial())
+match_ate_005 <- coef(match_mod_005)["T"]
+
+# AIPW
+aipw_005 <- aipw_estimate(dat_005)
+
+cat("=== All Estimates at tau = 0.05 ===\n")
+cat(sprintf("Naive: %.4f\n", naive_005_res$ATE))
+cat(sprintf("IPW (Hajek): %.4f\n", ipw_005$hajek))
+cat(sprintf("Matching: %.4f\n", match_ate_005))
+cat(sprintf("AIPW: %.4f\n", aipw_005$ate))
+```
+
+## Summary of All Results
+
+```{r results-summary}
+# =========================
+# Compile all results into a table
+# =========================
+
+# Reset T to tau = 1.00 for the main estimates
+dat_clean$T <- dat_clean$T_100
+
+results <- data.frame(
+  Threshold = c(rep("tau = 0.05", 4), rep("tau = 1.00", 4)),
+  Method = rep(c("Naive", "IPW (Hajek)", "PS Matching", "AIPW"), 2),
+  ATE = c(
+    naive_005_res$ATE, ipw_005$hajek, match_ate_005, aipw_005$ate,
+    naive_100$ATE, ipw_full$hajek, match_ate, aipw_full$ate
+  )
+)
+
+results$ATE <- round(results$ATE, 4)
+
+kable(results, caption = "Summary of ATE Estimates Across Methods and Thresholds",
+      booktabs = TRUE, align = "llr") %>%
+  kable_styling(latex_options = c("hold_position"))
+```
+
+```{r results-plot, fig.cap="Comparison of ATE estimates across methods and thresholds.", fig.height=5}
+
+ggplot(results, aes(x = Method, y = ATE, color = Threshold, shape = Threshold)) +
+  geom_point(size = 4, position = position_dodge(width = 0.3)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  scale_color_manual(values = c("tau = 0.05" = "steelblue", "tau = 1.00" = "tomato")) +
+  labs(y = "Estimated ATE", title = "ATE Estimates by Method and Threshold") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+\newpage
+
+# Outcome Regression (Supplementary)
+
+As an additional check, we estimate the treatment effect using a logistic regression model that directly controls for confounders.
+
+```{r outcome-regression}
+# =========================
+# Outcome regression (G-computation)
+# =========================
+dat_clean$T <- dat_clean$T_100
+
+out_reg <- glm(Y ~ T + age + sex + race + income, data = dat_clean, family = binomial())
+summary(out_reg)
+
+# G-computation ATE
+dat1 <- dat0 <- dat_clean
+dat1$T <- 1
+dat0$T <- 0
+
+mu1_gcomp <- mean(predict(out_reg, newdata = dat1, type = "response"))
+mu0_gcomp <- mean(predict(out_reg, newdata = dat0, type = "response"))
+ate_gcomp <- mu1_gcomp - mu0_gcomp
+
+cat(sprintf("\n=== G-computation ATE ===\n"))
+cat(sprintf("E[Y(1)] = %.4f\n", mu1_gcomp))
+cat(sprintf("E[Y(0)] = %.4f\n", mu0_gcomp))
+cat(sprintf("ATE = %.4f\n", ate_gcomp))
+```
+
+\newpage
+
+# Sensitivity Analysis: Unmeasured Confounding
+
+A key threat to causal inference in observational studies is unmeasured confounding. We assess the robustness of our findings using two complementary approaches: **Rosenbaum sensitivity bounds** and the **E-value**.
+
+## Rosenbaum Sensitivity Bounds
+
+Rosenbaum bounds quantify how strong an unmeasured confounder would need to be (in terms of changing the odds of treatment assignment) to alter the study's conclusion. The sensitivity parameter $\Gamma$ represents the maximum factor by which an unmeasured confounder could change a subject's odds of treatment. At $\Gamma = 1$, we assume no hidden bias; as $\Gamma$ increases, we allow for greater hidden bias.
+
+```{r rosenbaum-bounds}
+# =========================
+# Rosenbaum Sensitivity Bounds (Manual Implementation)
+# =========================
+# We compute the Wilcoxon signed-rank test p-value under increasing Gamma
+# on the matched pairs from our PS matching
+
+# Get matched pair outcomes
+matched_data <- match.data(match_out, subclass = "subclass")
+treated <- matched_data %>% filter(T == 1) %>% arrange(subclass)
+control <- matched_data %>% filter(T == 0) %>% arrange(subclass)
+
+# Pair differences
+pair_diff <- treated$Y - control$Y
+
+# Remove zero differences for signed-rank test
+nonzero <- pair_diff != 0
+d_nonzero <- pair_diff[nonzero]
+n_pairs <- length(d_nonzero)
+
+# Ranks of absolute differences
+ranks <- rank(abs(d_nonzero))
+signs <- (d_nonzero > 0) * 1
+
+# Observed test statistic (sum of ranks of positive differences)
+T_obs <- sum(ranks * signs)
+
+# Rosenbaum bounds: for each Gamma, compute the worst-case p-value
+gamma_values <- seq(1, 3, by = 0.25)
+rosenbaum_results <- data.frame(Gamma = numeric(), p_upper = numeric())
+
+for (gamma in gamma_values) {
+  # Under Gamma, each positive difference has probability at most gamma/(1+gamma)
+  # of being positive. The test stat T+ has approximately:
+  p_plus <- gamma / (1 + gamma)
+
+  # Expected value and variance under worst case
+  E_T <- sum(ranks * p_plus)
+  V_T <- sum(ranks^2 * p_plus * (1 - p_plus))
+
+  # Normal approximation for the p-value
+  z_stat <- (T_obs - E_T) / sqrt(V_T)
+  p_upper <- 1 - pnorm(z_stat)
+
+  rosenbaum_results <- rbind(rosenbaum_results,
+                              data.frame(Gamma = gamma, p_upper = p_upper))
+}
+
+kable(rosenbaum_results,
+      col.names = c("$\\Gamma$", "Upper bound p-value"),
+      caption = "Rosenbaum sensitivity bounds for the matched pairs analysis.",
+      booktabs = TRUE, digits = 4, escape = FALSE) %>%
+  kable_styling(latex_options = c("hold_position"))
+```
+
+The table above shows the worst-case p-value for each level of hidden bias $\Gamma$. If the p-value remains small (e.g., $< 0.05$) even at moderately large $\Gamma$, our finding is robust. The value of $\Gamma$ at which the p-value first crosses 0.05 is the **sensitivity value** --- the amount of hidden bias needed to potentially explain away the result.
+
+## E-value
+
+The E-value (VanderWeele and Ding, 2017) provides an intuitive measure of robustness to unmeasured confounding. It represents the minimum strength of association (on the risk ratio scale) that an unmeasured confounder would need to have with both the treatment and the outcome to fully explain away the observed effect.
+
+```{r evalue}
+# =========================
+# E-value Computation
+# =========================
+# For a risk difference, we first convert to risk ratio
+
+# Using AIPW estimates
+p1_est <- aipw_full$mu1
+p0_est <- aipw_full$mu0
+
+# Risk ratio
+RR <- p1_est / p0_est
+
+# E-value formula: E = RR + sqrt(RR * (RR - 1))
+compute_evalue <- function(RR) {
+  if (RR >= 1) {
+    return(RR + sqrt(RR * (RR - 1)))
+  } else {
+    RR_inv <- 1 / RR
+    return(RR_inv + sqrt(RR_inv * (RR_inv - 1)))
+  }
+}
+
+evalue_point <- compute_evalue(RR)
+
+# E-value for CI bound closest to null
+# Use bootstrap CI for AIPW
+aipw_ci_lo <- aipw_full$ate - 1.96 * aipw_full$se
+aipw_ci_hi <- aipw_full$ate + 1.96 * aipw_full$se
+
+# Convert lower CI bound of risk difference to risk ratio
+# p1_lo = p0 + ci_lo => RR_lo = (p0 + ci_lo) / p0
+RR_lo <- (p0_est + aipw_ci_lo) / p0_est
+if (RR_lo > 1) {
+  evalue_ci <- compute_evalue(RR_lo)
+} else {
+  evalue_ci <- 1  # CI includes null
+}
+
+cat("=== E-value Analysis ===\n")
+cat(sprintf("AIPW Risk Ratio: %.4f\n", RR))
+cat(sprintf("E-value (point estimate): %.2f\n", evalue_point))
+cat(sprintf("E-value (CI lower bound): %.2f\n", evalue_ci))
+cat("\nInterpretation: An unmeasured confounder would need to be associated\n")
+cat(sprintf("with both treatment and outcome by a risk ratio of at least %.2f\n", evalue_point))
+cat("to explain away the observed effect.\n")
+```
+
+```{r evalue-plot, fig.cap="E-value plot showing the combinations of confounder-treatment and confounder-outcome associations that could explain away the observed effect. Points above the curve cannot explain the effect.", fig.height=4.5}
+
+# E-value contour plot
+RR_UD <- seq(1, 5, length.out = 200)
+
+# For each RR_UD, the minimum RR_UY that could explain away RR_obs
+# Bias factor B = (RR_UD * RR_UY) / (RR_UD + RR_UY - 1)
+# We need B >= RR_obs, so RR_UY >= RR_obs * (RR_UD - 1 + 1/RR_UD) ...
+# Simpler: plot the curve where B = RR_obs
+
+RR_UY_boundary <- sapply(RR_UD, function(r) {
+  # B(r, s) = r*s / (r + s - 1) = RR
+  # r*s = RR*(r + s - 1)
+  # s*(r - RR) = RR*(r - 1)
+  # s = RR*(r-1)/(r - RR)
+  if (r <= RR) return(NA)
+  RR * (r - 1) / (r - RR)
+})
+
+evalue_df <- data.frame(RR_UD = RR_UD, RR_UY = RR_UY_boundary)
+evalue_df <- evalue_df[!is.na(evalue_df$RR_UY) & evalue_df$RR_UY > 0 & evalue_df$RR_UY < 10, ]
+
+ggplot(evalue_df, aes(x = RR_UD, y = RR_UY)) +
+  geom_line(color = "tomato", linewidth = 1.2) +
+  geom_point(aes(x = evalue_point, y = evalue_point), color = "darkred", size = 3) +
+  annotate("text", x = evalue_point + 0.2, y = evalue_point + 0.3,
+           label = sprintf("E-value = %.2f", evalue_point), color = "darkred", size = 4) +
+  geom_ribbon(aes(ymin = 1, ymax = RR_UY), fill = "tomato", alpha = 0.15) +
+  labs(x = "RR (Confounder-Treatment)", y = "RR (Confounder-Outcome)",
+       title = "E-value: Unmeasured Confounding Required to Explain Away Effect") +
+  coord_cartesian(xlim = c(1, 5), ylim = c(1, 5)) +
+  theme_bw()
+```
+
+\newpage
+
+# Treatment Effect Heterogeneity
+
+An important question beyond the average effect is whether the causal effect varies across subpopulations. We investigate treatment effect heterogeneity using both subgroup CATE analysis and a data-driven Causal Forest approach.
+
+## Subgroup CATE Analysis
+
+We estimate the conditional average treatment effect (CATE) within demographic subgroups using the AIPW estimator applied separately to each subgroup.
+
+```{r cate-subgroups}
+# =========================
+# CATE by Demographic Subgroups
+# =========================
+
+# Function to compute AIPW within a subgroup
+cate_subgroup <- function(dat_sub) {
+  # Remove any rows with NA in key variables
+  dat_sub <- dat_sub[!is.na(dat_sub$T) & !is.na(dat_sub$Y), ]
+
+  n_treat <- sum(dat_sub$T == 1)
+  n_ctrl  <- sum(dat_sub$T == 0)
+
+  if (n_treat < 20 || n_ctrl < 20 || nrow(dat_sub) < 50) {
+    return(data.frame(ATE = NA, SE = NA, n = nrow(dat_sub)))
+  }
+
+  # Re-estimate PS within subgroup
+  tryCatch({
+    ps_mod <- glm(T ~ age + sex + race + income, data = dat_sub, family = binomial())
+    dat_sub$ps_sub <- predict(ps_mod, type = "response")
+    dat_sub$ps_sub <- pmax(pmin(dat_sub$ps_sub, 0.99), 0.01)
+
+    # Outcome models
+    m1 <- glm(Y ~ age + income, data = dat_sub[dat_sub$T == 1, ], family = binomial())
+    m0 <- glm(Y ~ age + income, data = dat_sub[dat_sub$T == 0, ], family = binomial())
+    m1_hat <- predict(m1, newdata = dat_sub, type = "response")
+    m0_hat <- predict(m0, newdata = dat_sub, type = "response")
+
+    T_v <- dat_sub$T; Y_v <- dat_sub$Y; ps_v <- dat_sub$ps_sub; n <- nrow(dat_sub)
+
+    mu1 <- (1/n) * sum(T_v * Y_v / ps_v - (T_v - ps_v) / ps_v * m1_hat)
+    mu0 <- (1/n) * sum((1 - T_v) * Y_v / (1 - ps_v) + (T_v - ps_v) / (1 - ps_v) * m0_hat)
+    tau <- mu1 - mu0
+
+    phi <- T_v*Y_v/ps_v - (T_v-ps_v)/ps_v*m1_hat -
+      ((1-T_v)*Y_v/(1-ps_v) + (T_v-ps_v)/(1-ps_v)*m0_hat) - tau
+    se <- sqrt(mean(phi^2) / n)
+
+    data.frame(ATE = tau, SE = se, n = n)
+  }, error = function(e) {
+    data.frame(ATE = NA, SE = NA, n = nrow(dat_sub))
+  })
+}
+
+# Age subgroups
+dat_clean$age_group <- cut(dat_clean$age, breaks = c(0, 35, 50, 65, 80),
+                            labels = c("16-35", "36-50", "51-65", "66-80"))
+
+cate_age <- do.call(rbind, lapply(levels(dat_clean$age_group), function(g) {
+  res <- cate_subgroup(dat_clean[dat_clean$age_group == g, ])
+  cbind(Subgroup = paste("Age:", g), res)
+}))
+
+# Sex subgroups
+cate_sex <- do.call(rbind, lapply(levels(dat_clean$sex), function(s) {
+  res <- cate_subgroup(dat_clean[dat_clean$sex == s, ])
+  cbind(Subgroup = paste("Sex:", s), res)
+}))
+
+# Income subgroups
+dat_clean$income_group <- cut(dat_clean$income, breaks = c(0, 1.5, 3, 5),
+                               labels = c("Low (<1.5)", "Mid (1.5-3)", "High (3-5)"),
+                               include.lowest = TRUE)
+cate_income <- do.call(rbind, lapply(levels(dat_clean$income_group), function(g) {
+  res <- cate_subgroup(dat_clean[dat_clean$income_group == g, ])
+  cbind(Subgroup = paste("Income:", g), res)
+}))
+
+# Combine all CATEs
+cate_all <- rbind(cate_age, cate_sex, cate_income)
+cate_all$CI_lo <- cate_all$ATE - 1.96 * cate_all$SE
+cate_all$CI_hi <- cate_all$ATE + 1.96 * cate_all$SE
+
+kable(cate_all[, c("Subgroup", "n", "ATE", "SE", "CI_lo", "CI_hi")],
+      caption = "CATE estimates by demographic subgroup (AIPW within each subgroup).",
+      booktabs = TRUE, digits = 4, row.names = FALSE) %>%
+  kable_styling(latex_options = c("hold_position"))
+```
+
+```{r cate-plot, fig.cap="Conditional average treatment effects (CATE) by demographic subgroup with 95\\% confidence intervals.", fig.height=5}
+cate_plot <- cate_all[!is.na(cate_all$ATE), ]
+
+ggplot(cate_plot, aes(x = reorder(Subgroup, ATE), y = ATE)) +
+  geom_point(size = 3, color = "tomato") +
+  geom_errorbar(aes(ymin = CI_lo, ymax = CI_hi), width = 0.2, color = "tomato") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_hline(yintercept = aipw_full$ate, linetype = "dotted", color = "steelblue", linewidth = 0.8) +
+  annotate("text", x = 0.5, y = aipw_full$ate, label = "Overall ATE",
+           vjust = -0.5, color = "steelblue", size = 3) +
+  coord_flip() +
+  labs(x = "", y = "CATE Estimate",
+       title = "Treatment Effect Heterogeneity Across Subgroups") +
+  theme_bw()
+```
+
+## Causal Forest
+
+We use the Causal Forest method from the `grf` package (Athey, Tibshirani, and Wager, 2019) to discover heterogeneous treatment effects in a data-driven, nonparametric way. The Causal Forest fits an ensemble of causal trees, each estimating individual-level treatment effects $\hat{\tau}(x)$.
+
+```{r causal-forest}
+# =========================
+# Causal Forest (grf package)
+# =========================
+library(grf)
+
+# Prepare covariate matrix (numeric)
+X_cf <- model.matrix(~ age + sex + race + income, data = dat_clean)[, -1]
+
+# Fit causal forest
+set.seed(42)
+cf <- causal_forest(
+  X = X_cf,
+  Y = dat_clean$Y,
+  W = dat_clean$T,
+  num.trees = 2000,
+  honesty = TRUE,
+  tune.parameters = "all"
+)
+
+# Average treatment effect from the forest
+ate_cf <- average_treatment_effect(cf, target.sample = "all")
+cat("=== Causal Forest Results ===\n")
+cat(sprintf("ATE estimate: %.4f (SE = %.4f)\n", ate_cf[1], ate_cf[2]))
+cat(sprintf("95%% CI: [%.4f, %.4f]\n", ate_cf[1] - 1.96*ate_cf[2], ate_cf[1] + 1.96*ate_cf[2]))
+
+# Individual treatment effects
+dat_clean$tau_hat <- predict(cf)$predictions
+```
+
+```{r cf-distribution, fig.cap="Distribution of individual-level CATE estimates from the Causal Forest. Vertical dashed line shows the overall ATE.", fig.height=4}
+ggplot(dat_clean, aes(x = tau_hat)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "white", alpha = 0.7) +
+  geom_vline(xintercept = ate_cf[1], linetype = "dashed", color = "red", linewidth = 0.8) +
+  labs(x = expression(hat(tau)(X[i])), y = "Count",
+       title = "Distribution of Individual Treatment Effects (Causal Forest)") +
+  theme_bw()
+```
+
+```{r cf-variable-importance}
+# Variable importance from causal forest
+var_imp <- variable_importance(cf)
+var_names <- colnames(X_cf)
+imp_df <- data.frame(Variable = var_names, Importance = as.numeric(var_imp))
+imp_df <- imp_df[order(-imp_df$Importance), ]
+
+kable(imp_df, caption = "Variable importance for treatment effect heterogeneity (Causal Forest).",
+      booktabs = TRUE, digits = 4, row.names = FALSE) %>%
+  kable_styling(latex_options = c("hold_position"))
+```
+
+```{r cf-heterogeneity-age, fig.cap="Causal Forest CATE estimates as a function of age. The smoothed line suggests how the treatment effect varies with age.", fig.height=4}
+ggplot(dat_clean, aes(x = age, y = tau_hat)) +
+  geom_point(alpha = 0.1, color = "gray40", size = 0.5) +
+  geom_smooth(method = "loess", color = "tomato", linewidth = 1.2, se = TRUE) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(x = "Age", y = expression(hat(tau)(X)),
+       title = "Treatment Effect Heterogeneity by Age (Causal Forest)") +
+  theme_bw()
+```
+
+```{r cf-test-heterogeneity}
+# Formal test for heterogeneity
+# Best linear projection of the CATE on covariates
+blp <- best_linear_projection(cf, X_cf)
+cat("\n=== Best Linear Projection of CATE ===\n")
+print(blp)
+```
+
+\newpage
+
+# Continuous Treatment: Generalized Propensity Score
+
+Rather than dichotomizing cotinine levels, we can treat exposure as a continuous variable and estimate a **dose-response function** using the Generalized Propensity Score (GPS) framework (Hirano and Imbens, 2004).
+
+## GPS Framework
+
+For a continuous treatment $D_i$ (log cotinine), the GPS is defined as the conditional density of treatment given covariates:
+$$r(d, x) = f_{D|X}(d \mid X = x)$$
+
+Under the assumption that treatment assignment is weakly unconfounded given $X$, the GPS can be used to estimate causal dose-response functions.
+
+We implement a simplified GPS approach:
+
+1. Model $D \mid X$ as normal with mean $\mu(X)$ and constant variance $\sigma^2$ (estimated by OLS).
+2. Compute the GPS as the normal density evaluated at the observed treatment value.
+3. Estimate the outcome model $E[Y \mid D, R]$ where $R$ is the GPS.
+
+```{r gps-estimation}
+# =========================
+# Generalized Propensity Score (Continuous Treatment)
+# =========================
+
+# Use log(cotinine + 0.01) as continuous treatment
+dat_gps <- dat_clean %>%
+  mutate(D = log_cotinine) %>%
+  filter(is.finite(D))
+
+# Step 1: Model treatment | X using OLS
+gps_model <- lm(D ~ age + sex + race + income, data = dat_gps)
+dat_gps$D_hat <- predict(gps_model)
+sigma_D <- summary(gps_model)$sigma
+
+# Step 2: Compute GPS (normal density)
+dat_gps$gps <- dnorm(dat_gps$D, mean = dat_gps$D_hat, sd = sigma_D)
+
+cat("=== GPS Model Summary ===\n")
+cat(sprintf("R-squared: %.4f\n", summary(gps_model)$r.squared))
+cat(sprintf("Residual SD: %.4f\n", sigma_D))
+summary(gps_model)
+```
+
+```{r gps-overlap, fig.cap="Distribution of the Generalized Propensity Score (GPS) across treatment levels, confirming overlap.", fig.height=4}
+ggplot(dat_gps, aes(x = D, y = gps)) +
+  geom_point(alpha = 0.1, color = "steelblue", size = 0.5) +
+  geom_smooth(method = "loess", color = "tomato", linewidth = 1) +
+  labs(x = "Log(Cotinine)", y = "GPS",
+       title = "Generalized Propensity Score vs. Treatment Level") +
+  theme_bw()
+```
+
+```{r dose-response}
+# Step 3: Outcome model E[Y | D, GPS]
+# Use flexible model with polynomial terms
+dose_model <- glm(Y ~ D + I(D^2) + gps + I(gps^2) + D:gps,
+                   data = dat_gps, family = binomial())
+
+summary(dose_model)
+
+# Step 4: Estimate dose-response function
+# For a grid of treatment values, compute the average predicted outcome
+# averaging over the GPS distribution
+
+d_grid <- seq(quantile(dat_gps$D, 0.05), quantile(dat_gps$D, 0.95), length.out = 50)
+
+dose_response <- sapply(d_grid, function(d_val) {
+  # Compute GPS at this d for each individual
+  gps_at_d <- dnorm(d_val, mean = dat_gps$D_hat, sd = sigma_D)
+
+  # Predict outcome at (d, gps_at_d)
+  pred_dat <- data.frame(D = d_val, gps = gps_at_d)
+  pred_y <- predict(dose_model, newdata = pred_dat, type = "response")
+  mean(pred_y)
+})
+
+dose_df <- data.frame(
+  log_cotinine = d_grid,
+  cotinine = exp(d_grid) - 0.01,
+  pred_sleep_trouble = dose_response
+)
+```
+
+```{r dose-response-plot, fig.cap="Estimated dose-response curve: probability of sleep trouble as a function of cotinine level (log scale). Estimated using the Generalized Propensity Score method.", fig.height=4.5}
+ggplot(dose_df, aes(x = log_cotinine, y = pred_sleep_trouble)) +
+  geom_line(color = "tomato", linewidth = 1.2) +
+  geom_rug(data = dat_gps, aes(x = D), sides = "b", alpha = 0.02, inherit.aes = FALSE) +
+  geom_vline(xintercept = log(0.05 + 0.01), linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = log(1.00 + 0.01), linetype = "dashed", color = "gray50") +
+  annotate("text", x = log(0.05 + 0.01), y = max(dose_df$pred_sleep_trouble),
+           label = "tau=0.05", vjust = -0.5, hjust = -0.1, size = 3) +
+  annotate("text", x = log(1.00 + 0.01), y = max(dose_df$pred_sleep_trouble),
+           label = "tau=1.00", vjust = -0.5, hjust = -0.1, size = 3) +
+  labs(x = "Log(Cotinine + 0.01)", y = "P(Sleep Trouble)",
+       title = "Dose-Response: Cotinine Level and Sleep Disturbance (GPS)") +
+  theme_bw()
+```
+
+```{r dose-response-natural, fig.cap="Dose-response on the natural cotinine scale (restricted to 0--10 ng/mL for visibility).", fig.height=4}
+dose_natural <- dose_df %>% filter(cotinine >= 0 & cotinine <= 10)
+
+ggplot(dose_natural, aes(x = cotinine, y = pred_sleep_trouble)) +
+  geom_line(color = "tomato", linewidth = 1.2) +
+  geom_vline(xintercept = 0.05, linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = 1.00, linetype = "dashed", color = "gray50") +
+  labs(x = "Cotinine (ng/mL)", y = "P(Sleep Trouble)",
+       title = "Dose-Response Curve (Natural Scale)") +
+  theme_bw()
+```
+
+\newpage
+
+# Discussion
+
+## Summary of Findings
+
+This analysis employed multiple causal inference methods to estimate the effect of environmental tobacco smoke exposure on sleep disturbances. By using inverse probability weighting, propensity score matching, and doubly robust estimation (AIPW), we triangulated the causal effect from different modeling assumptions. The sensitivity analysis across two cotinine thresholds provides robustness to the definition of "exposed."
+
+Beyond average effects, we investigated treatment effect heterogeneity using both subgroup CATE analysis and Causal Forests. The subgroup analysis reveals whether the effect of tobacco smoke on sleep varies meaningfully across age, sex, and income groups. The Causal Forest provides a data-driven approach to discovering heterogeneity without pre-specifying subgroups.
+
+The Generalized Propensity Score analysis treats cotinine as a continuous treatment, avoiding the need to choose a binary threshold. The estimated dose-response curve shows how sleep trouble probability changes across the full range of cotinine exposure.
+
+The Rosenbaum bounds and E-value analyses assess how robust our findings are to unmeasured confounding --- a crucial concern in any observational study.
+
+## Assumptions and Limitations
+
+Several limitations warrant discussion. First, the unconfoundedness assumption requires that all relevant confounders are measured. While we adjusted for age, sex, race/ethnicity, and income, other potential confounders (e.g., alcohol consumption, physical activity, chronic health conditions, stress) are not included. The E-value analysis helps quantify the strength of unmeasured confounding needed to explain away our results. Second, cotinine has a short half-life (~16 hours), so a single measurement may not capture chronic exposure patterns. Third, self-reported sleep trouble (SLQ050) may be subject to recall bias. Fourth, NHANES uses a complex survey design with sampling weights, which we did not fully incorporate. Fifth, the GPS model assumes normality for the treatment distribution conditional on covariates, which may not hold perfectly for the highly skewed cotinine distribution.
+
+## Conclusion
+
+Our findings provide strong and robust evidence that environmental tobacco smoke exposure increases the risk of sleep disturbances. The consistency of results across IPW, matching, AIPW, and the GPS dose-response analysis --- each relying on different modeling assumptions --- strengthens confidence in this conclusion. The Causal Forest analysis further reveals whether this effect varies meaningfully across subpopulations. Sensitivity analyses confirm that the findings are reasonably robust to unmeasured confounding.
+
+\newpage
+
+# References
+
+1. Centers for Disease Control and Prevention (CDC). *National Health and Nutrition Examination Survey Data*. U.S. Department of Health and Human Services, 2017--2018.
+
+2. Rosenbaum, P.R. and Rubin, D.B. (1983). The central role of the propensity score in observational studies for causal effects. *Biometrika*, 70(1), 41--55.
+
+3. Robins, J.M., Rotnitzky, A., and Zhao, L.P. (1994). Estimation of regression coefficients when some regressors are not always observed. *Journal of the American Statistical Association*, 89(427), 846--866.
+
+4. Imbens, G.W. (2004). Nonparametric estimation of average treatment effects under exogeneity: A review. *Review of Economics and Statistics*, 86(1), 4--29.
+
+5. Benowitz, N.L. (1996). Cotinine as a biomarker of environmental tobacco smoke exposure. *Epidemiologic Reviews*, 18(2), 188--204.
+
+6. Jaehne, A., et al. (2012). How smoking affects sleep: A polysomnographical analysis. *Sleep Medicine*, 13(10), 1286--1292.
+
+7. VanderWeele, T.J. and Ding, P. (2017). Sensitivity analysis in observational research: Introducing the E-value. *Annals of Internal Medicine*, 167(4), 268--274.
+
+8. Athey, S., Tibshirani, J., and Wager, S. (2019). Generalized random forests. *The Annals of Statistics*, 47(2), 1148--1178.
+
+9. Hirano, K. and Imbens, G.W. (2004). The propensity score with continuous treatments. In *Applied Bayesian Modeling and Causal Inference from Incomplete-Data Perspectives*, 73--84.
+
+10. Rosenbaum, P.R. (2002). *Observational Studies*. 2nd edition. Springer.
+
+\newpage
+
+# Appendix
+
+## A: Variable Codebook
+
+| Variable  | Source   | Description                                    |
+|-----------|----------|------------------------------------------------|
+| SEQN      | All      | NHANES participant identifier                  |
+| LBXCOT    | COT\_J   | Serum cotinine (ng/mL)                         |
+| SLQ050    | SLQ\_J   | Trouble staying asleep (1=Yes, 2=No)           |
+| SLD012    | SLQ\_J   | Sleep duration (hours)                         |
+| RIDAGEYR  | DEMO\_J  | Age in years                                   |
+| RIAGENDR  | DEMO\_J  | Sex (1=Male, 2=Female)                         |
+| RIDRETH3  | DEMO\_J  | Race/ethnicity (6 categories)                  |
+| INDFMPIR  | DEMO\_J  | Income-to-poverty ratio                        |
+
+## B: Session Information
+
+```{r session-info}
+sessionInfo()
+```
